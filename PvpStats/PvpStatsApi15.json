@@ -7,7 +7,7 @@
   "RepoUrl": "https://github.com/Originaljsx/PvpStats-api15",
   "ApplicableVersion": "any",
   "DalamudApiLevel": 15,
-  "Changelog": "* Resilient LiteDB open: corrupt or inconsistent databases now get auto-backed-up and recreated instead of throwing. Cache reads no longer crash if the database is unreadable.",
+  "Changelog": "* Fixes a load failure in v2.6.2.3: the aggressive sanity probe is gone, and recovery now disposes the database handle before trying to back up files (Windows otherwise refuses with 'file in use'). Plugin now loads even on a database it cannot fully read; failed reads return empty.",
   "Tags": [
     "pvp",
     "statistics"

@@ -79,35 +79,48 @@ internal class StorageService {
     }
 
     private LiteDatabase OpenOrRecover(string path) {
+        LiteDatabase? db = null;
         try {
-            var db = new LiteDatabase(path);
-            // Sanity probe — checkpoint the WAL and run a trivial enumeration. If the
-            // file is structurally intact but the log is inconsistent, this surfaces it
-            // here at construction time rather than later on the first user query.
-            db.Checkpoint();
-            _ = db.GetCollection(CCTable).Count(LiteDB.Query.All());
+            db = new LiteDatabase(path);
+            // Best-effort WAL checkpoint. Failure here is non-fatal — many transient
+            // states (e.g. file flagged read-only by AV) shouldn't trigger a recreate.
+            try { db.Checkpoint(); } catch { /* ignored */ }
             return db;
         } catch (Exception ex) {
-            _plugin.Log.Error(ex, $"LiteDB failed to open or sanity-probe at {path}. Backing up and recreating.");
-            try {
-                var dir = Path.GetDirectoryName(path);
-                var stem = Path.GetFileNameWithoutExtension(path);
-                var ext = Path.GetExtension(path);
-                var ts = DateTime.UtcNow.ToString("yyyyMMddHHmmss");
-                if (File.Exists(path)) {
-                    File.Move(path, Path.Combine(dir!, $"{stem}.{ts}.bak{ext}"));
-                }
-                var logPath = Path.Combine(dir!, $"{stem}-log{ext}");
-                if (File.Exists(logPath)) {
-                    File.Move(logPath, Path.Combine(dir!, $"{stem}-log.{ts}.bak{ext}"));
-                }
-            } catch (Exception backupEx) {
-                _plugin.Log.Error(backupEx, "Failed to back up corrupt LiteDB files; deleting outright.");
-                try { if (File.Exists(path)) File.Delete(path); } catch { }
-                var logPath2 = Path.Combine(Path.GetDirectoryName(path)!, $"{Path.GetFileNameWithoutExtension(path)}-log{Path.GetExtension(path)}");
-                try { if (File.Exists(logPath2)) File.Delete(logPath2); } catch { }
-            }
+            // Drop the half-opened handle before we try to move/delete the file —
+            // otherwise Windows refuses with "file in use".
+            try { db?.Dispose(); } catch { /* ignored */ }
+            _plugin.Log.Error(ex, $"LiteDB failed to open at {path}. Backing up and recreating.");
+
+            var dir = Path.GetDirectoryName(path);
+            var stem = Path.GetFileNameWithoutExtension(path);
+            var ext = Path.GetExtension(path);
+            var logPath = string.IsNullOrEmpty(dir) ? $"{stem}-log{ext}" : Path.Combine(dir, $"{stem}-log{ext}");
+            var ts = DateTime.UtcNow.ToString("yyyyMMddHHmmss");
+
+            TryRename(path, string.IsNullOrEmpty(dir) ? $"{stem}.{ts}.bak{ext}" : Path.Combine(dir, $"{stem}.{ts}.bak{ext}"));
+            TryRename(logPath, string.IsNullOrEmpty(dir) ? $"{stem}-log.{ts}.bak{ext}" : Path.Combine(dir, $"{stem}-log.{ts}.bak{ext}"));
+
             return new LiteDatabase(path);
+        }
+    }
+
+    private void TryRename(string src, string dst) {
+        if (!File.Exists(src)) return;
+        try {
+            File.Move(src, dst);
+            return;
+        } catch (Exception moveEx) {
+            _plugin.Log.Warning($"Could not rename {src} to {dst}: {moveEx.Message}. Falling back to copy+delete.");
+        }
+        try {
+            File.Copy(src, dst, overwrite: true);
+            File.Delete(src);
+        } catch (Exception copyEx) {
+            _plugin.Log.Warning($"Fallback copy+delete of {src} failed: {copyEx.Message}. Attempting outright delete.");
+            try { File.Delete(src); } catch (Exception delEx) {
+                _plugin.Log.Error(delEx, $"Could not remove {src}; LiteDB will likely fail to reopen.");
+            }
         }
     }
     internal ILiteCollection<CrystallineConflictMatch> GetCCMatches() {
