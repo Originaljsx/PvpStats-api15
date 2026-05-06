@@ -1,7 +1,26 @@
-# PvP Tracker
-<img src="https://raw.githubusercontent.com/wrath16/PvpStats/master/images/icon.png" width="256" height="256">
+# PvP Tracker — Dalamud API 15 fork
 
-[![Download count](https://img.shields.io/endpoint?url=https://qzysathwfhebdai6xgauhz4q7m0mzmrf.lambda-url.us-east-1.on.aws/PvpStats)](https://github.com/wrath16/PvpStats)
+> **This is a community fork of [wrath16/PvpStats](https://github.com/wrath16/PvpStats)** that restores compatibility with Dalamud API 15 (broken on 2026-04-29 by the v15 SDK release). All credit for the plugin goes to the original author SaMo. See [`V15_FIX.md`](V15_FIX.md) for the exact list of changes — the bulk of the work is the merge of upstream [PR #12](https://github.com/wrath16/PvpStats/pull/12) plus a manifest fix.
+
+## Install (third-party repo)
+
+In FFXIV with Dalamud loaded:
+
+1. `/xlsettings` → **Experimental** tab
+2. Under **Custom Plugin Repositories**, add this URL:
+   ```
+   https://raw.githubusercontent.com/Originaljsx/PvpStats-api15/master/pluginmaster.json
+   ```
+3. Click the `+` to confirm, then **Save and Close**
+4. Open `/xlplugins` → search for **PvP Tracker** → install
+
+The plugin updates from the same URL automatically; pulling new releases is just a matter of letting Dalamud refresh.
+
+If/when upstream merges PR #12, switch to the official Dalamud repo and uninstall this fork.
+
+---
+
+<img src="https://raw.githubusercontent.com/Originaljsx/PvpStats-api15/master/images/icon.png" width="256" height="256">
 
 Final Fantasy XIV Dalamud plugin for recording PvP match history.
 

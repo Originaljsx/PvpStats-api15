@@ -1,0 +1,21 @@
+[
+  {
+    "Author": "SaMo (Dalamud v15 fork by Originaljsx)",
+    "Name": "PvP Tracker",
+    "Punchline": "PvP match history and stats tracker.",
+    "Description": "Record, browse and filter your Crystalline Conflict, Frontline and Rival Wings match history, view match scoreboards and view aggregated statistics like win rate and average damage dealt per match. This is a community fork that restores compatibility with Dalamud API 15 (FFXIV patch 7.5).",
+    "InternalName": "PvpStats",
+    "AssemblyVersion": "2.6.2.0",
+    "TestingAssemblyVersion": null,
+    "RepoUrl": "https://github.com/Originaljsx/PvpStats-api15",
+    "ApplicableVersion": "any",
+    "DalamudApiLevel": 15,
+    "Tags": ["pvp", "statistics", "crystalline-conflict", "frontline", "rival-wings"],
+    "CategoryTags": ["utility"],
+    "DownloadLinkInstall": "https://github.com/Originaljsx/PvpStats-api15/releases/latest/download/latest.zip",
+    "DownloadLinkUpdate": "https://github.com/Originaljsx/PvpStats-api15/releases/latest/download/latest.zip",
+    "DownloadLinkTesting": "https://github.com/Originaljsx/PvpStats-api15/releases/latest/download/latest.zip",
+    "IconUrl": "https://raw.githubusercontent.com/Originaljsx/PvpStats-api15/master/images/icon.png",
+    "Changelog": "Updated for Dalamud API 15 (compatible with FFXIV patch 7.5). Adds Archeia Harmonias arena. Migrates ObjectKind.Player -> ObjectKind.Pc, IDutyStateEventArgs, ImRaii.ColorDisposable, AtkValueType, ActionEffectHandler.MemberFunctionPointers.Receive."
+  }
+]
