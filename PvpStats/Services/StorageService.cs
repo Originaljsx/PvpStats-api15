@@ -5,6 +5,7 @@ using PvpStats.Types.Player;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -26,7 +27,7 @@ internal class StorageService {
 
     internal StorageService(Plugin plugin, string path) {
         _plugin = plugin;
-        Database = new LiteDatabase(path);
+        Database = OpenOrRecover(path);
 
         //if(Database.UserVersion <= 0) {
         //    //foreach(var x in GetCCMatches().Find("Teams")) {
@@ -75,6 +76,39 @@ internal class StorageService {
 
     public void Dispose() {
         Database.Dispose();
+    }
+
+    private LiteDatabase OpenOrRecover(string path) {
+        try {
+            var db = new LiteDatabase(path);
+            // Sanity probe — checkpoint the WAL and run a trivial enumeration. If the
+            // file is structurally intact but the log is inconsistent, this surfaces it
+            // here at construction time rather than later on the first user query.
+            db.Checkpoint();
+            _ = db.GetCollection(CCTable).Count(LiteDB.Query.All());
+            return db;
+        } catch (Exception ex) {
+            _plugin.Log.Error(ex, $"LiteDB failed to open or sanity-probe at {path}. Backing up and recreating.");
+            try {
+                var dir = Path.GetDirectoryName(path);
+                var stem = Path.GetFileNameWithoutExtension(path);
+                var ext = Path.GetExtension(path);
+                var ts = DateTime.UtcNow.ToString("yyyyMMddHHmmss");
+                if (File.Exists(path)) {
+                    File.Move(path, Path.Combine(dir!, $"{stem}.{ts}.bak{ext}"));
+                }
+                var logPath = Path.Combine(dir!, $"{stem}-log{ext}");
+                if (File.Exists(logPath)) {
+                    File.Move(logPath, Path.Combine(dir!, $"{stem}-log.{ts}.bak{ext}"));
+                }
+            } catch (Exception backupEx) {
+                _plugin.Log.Error(backupEx, "Failed to back up corrupt LiteDB files; deleting outright.");
+                try { if (File.Exists(path)) File.Delete(path); } catch { }
+                var logPath2 = Path.Combine(Path.GetDirectoryName(path)!, $"{Path.GetFileNameWithoutExtension(path)}-log{Path.GetExtension(path)}");
+                try { if (File.Exists(logPath2)) File.Delete(logPath2); } catch { }
+            }
+            return new LiteDatabase(path);
+        }
     }
     internal ILiteCollection<CrystallineConflictMatch> GetCCMatches() {
         return Database.GetCollection<CrystallineConflictMatch>(CCTable);

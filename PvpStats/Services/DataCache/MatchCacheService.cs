@@ -1,6 +1,7 @@
 ﻿using LiteDB;
 using PvpStats.Types.Match;
 using PvpStats.Types.Match.Timeline;
+using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
@@ -18,8 +19,17 @@ internal abstract class MatchCacheService<T> where T : PvpMatch {
             if(CachingEnabled) {
                 return _matches.AsReadOnly();
             } else {
-                return GetFromStorage().ToList().AsReadOnly();
+                return SafeGetFromStorage().AsReadOnly();
             }
+        }
+    }
+
+    private List<T> SafeGetFromStorage() {
+        try {
+            return GetFromStorage().ToList();
+        } catch (Exception ex) {
+            Plugin.Log.Error(ex, $"Failed to read {typeof(T).Name} matches from storage; returning empty list. The database may be corrupt — check the {Plugin.PluginInterface.GetPluginConfigDirectory()} directory.");
+            return [];
         }
     }
 
@@ -48,7 +58,7 @@ internal abstract class MatchCacheService<T> where T : PvpMatch {
     }
 
     private void RebuildCache() {
-        _matches = GetFromStorage().ToList();
+        _matches = SafeGetFromStorage();
     }
 
     internal async Task AddMatch(T match) {
