@@ -13,6 +13,7 @@ using PvpStats.Types.Match;
 using PvpStats.Utility;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Threading.Tasks;
@@ -114,6 +115,8 @@ public sealed class Plugin : IDalamudPlugin {
             TextureProvider = textureProvider;
             InteropProvider = interopProvider;
             SigScanner = sigScanner;
+
+            MigrateLegacyConfigIfNeeded();
 
             try {
                 Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
@@ -304,5 +307,37 @@ public sealed class Plugin : IDalamudPlugin {
         Configuration.LastPluginVersion = currentVersion?.ToString() ?? "0.0.0.0";
         Configuration.Save();
         Log2.Information("PvP Tracker initialized.");
+    }
+
+    private void MigrateLegacyConfigIfNeeded() {
+        try {
+            var newConfigDir = PluginInterface.GetPluginConfigDirectory();
+            var pluginConfigsRoot = Path.GetDirectoryName(newConfigDir);
+            if (string.IsNullOrEmpty(pluginConfigsRoot)) {
+                return;
+            }
+
+            var legacyDir = Path.Combine(pluginConfigsRoot, "PvpStats");
+            var legacyConfigJson = Path.Combine(pluginConfigsRoot, "PvpStats.json");
+            var newConfigJson = Path.Combine(pluginConfigsRoot, "PvpStatsApi15.json");
+
+            if (File.Exists(legacyConfigJson) && !File.Exists(newConfigJson)) {
+                File.Copy(legacyConfigJson, newConfigJson);
+                Log.Information($"Imported legacy PvpStats configuration from {legacyConfigJson}");
+            }
+
+            if (Directory.Exists(legacyDir)) {
+                Directory.CreateDirectory(newConfigDir);
+                foreach (var src in Directory.EnumerateFiles(legacyDir)) {
+                    var dst = Path.Combine(newConfigDir, Path.GetFileName(src));
+                    if (!File.Exists(dst)) {
+                        File.Copy(src, dst);
+                        Log.Information($"Imported legacy PvpStats file: {Path.GetFileName(src)}");
+                    }
+                }
+            }
+        } catch (Exception ex) {
+            Log.Error(ex, "Failed to migrate legacy PvpStats data");
+        }
     }
 }
