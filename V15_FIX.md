@@ -20,7 +20,21 @@ The hits inside PvpStats:
 
 Plus a non-API change: patch 7.5 added the **Archeia Harmonias** CC arena, which the manager needed to recognize.
 
-## The fix is two commits on a new branch
+## v2.6.2.1 — InternalName rename
+
+The original v2.6.2.0 release shipped with the upstream `InternalName: "PvpStats"`. Dalamud's plugin installer dedupes by `InternalName`, so the custom-repo entry was hidden behind the official Dalamud-repo upstream entry. Fixed in v2.6.2.1 by renaming:
+
+- `PvpStats/PvpStats.csproj`: added `<AssemblyName>PvpStatsApi15</AssemblyName>`
+- Source manifest renamed `PvpStats/PvpStats.json` → `PvpStats/PvpStatsApi15.json`
+- `InternalName: "PvpStats"` → `InternalName: "PvpStatsApi15"`
+- Display `Name: "PvP Tracker"` → `"PvP Tracker (API 15)"`
+- `Author` and `RepoUrl` updated to credit the fork
+- `IconUrl` repointed to the fork's `images/icon.png`
+- pluginmaster.json's `InternalName`, `Name`, `AssemblyVersion` mirrored
+
+Note: the rename changes the plugin's config directory from `%AppData%\XIVLauncher\pluginConfigs\PvpStats\` to `…\PvpStatsApi15\`. To preserve existing match history, copy the contents of the old folder to the new one once after installing.
+
+## The original fix is two commits on a new branch
 
 Branch: `api15-fix`, based on upstream `master` at `5369a7a Fix 7.5 periods`.
 

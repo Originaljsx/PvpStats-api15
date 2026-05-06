@@ -12,7 +12,7 @@ In FFXIV with Dalamud loaded:
    https://raw.githubusercontent.com/Originaljsx/PvpStats-api15/master/pluginmaster.json
    ```
 3. Click the `+` to confirm, then **Save and Close**
-4. Open `/xlplugins` → search for **PvP Tracker** → install
+4. Open `/xlplugins` → search for **PvP Tracker (API 15)** → install
 
 The plugin updates from the same URL automatically; pulling new releases is just a matter of letting Dalamud refresh.
 

@@ -1,12 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project Sdk="Dalamud.NET.Sdk/15.0.0">
 	<PropertyGroup>
-		<Authors>SaMo</Authors>
+		<Authors>SaMo (fork: Originaljsx)</Authors>
 		<Company></Company>
-		<Version>2.6.2.0</Version>
-		<Description>Pvp Stats</Description>
+		<Version>2.6.2.1</Version>
+		<Description>Pvp Stats — Dalamud API 15 community fork</Description>
 		<Copyright></Copyright>
 		<PackageProjectUrl></PackageProjectUrl>
+		<AssemblyName>PvpStatsApi15</AssemblyName>
 	</PropertyGroup>
 	<ItemGroup>
 		<Content Include="..\images\background\*.png">
