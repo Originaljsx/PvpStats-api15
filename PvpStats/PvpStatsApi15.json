@@ -7,7 +7,7 @@
   "RepoUrl": "https://github.com/Originaljsx/PvpStats-api15",
   "ApplicableVersion": "any",
   "DalamudApiLevel": 15,
-  "Changelog": "* Fixes a load failure in v2.6.2.3: the aggressive sanity probe is gone, and recovery now disposes the database handle before trying to back up files (Windows otherwise refuses with 'file in use'). Plugin now loads even on a database it cannot fully read; failed reads return empty.",
+  "Changelog": "* New SQLite mirror DB at pluginConfigs/PvpStatsApi15/stats.sqlite; every CC match is written there alongside LiteDB.\n* New /pvpstatscsv command: exports completed CC matches (one row per match-player) to pluginConfigs/PvpStatsApi15/exports/cc-matches-{timestamp}.csv.\n* Foundation for upcoming advanced stats (effective shielding, mit, etc.) sourced from local IINACT logs.",
   "Tags": [
     "pvp",
     "statistics"

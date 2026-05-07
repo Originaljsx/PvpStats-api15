@@ -24,6 +24,7 @@ public sealed class Plugin : IDalamudPlugin {
     public string Name => "PvpStats";
 
     internal const string DatabaseName = "data.db";
+    internal const string SqliteDatabaseName = "stats.sqlite";
 
     private const string SplashCommandName = "/pvpstats";
     private const string CCStatsCommandName = "/ccstats";
@@ -32,6 +33,7 @@ public sealed class Plugin : IDalamudPlugin {
     private const string DebugCommandName = "/pvpstatsdebug";
     private const string ConfigCommandName = "/pvpstatsconfig";
     private const string LastMatchCommandName = "/lastmatch";
+    private const string CsvExportCommandName = "/pvpstatscsv";
 
     internal static IPluginLog Log2;
 
@@ -66,6 +68,7 @@ public sealed class Plugin : IDalamudPlugin {
     internal DataQueue DataQueue { get; init; }
     internal LocalizationService Localization { get; init; }
     internal StorageService Storage { get; init; }
+    internal SqliteStorageService SqliteStorage { get; init; }
     internal CCMatchCacheService CCCache { get; init; }
     internal FLMatchCacheService FLCache { get; init; }
     internal RWMatchCacheService RWCache { get; init; }
@@ -128,6 +131,7 @@ public sealed class Plugin : IDalamudPlugin {
 
             DataQueue = new();
             Storage = new(this, $"{PluginInterface.GetPluginConfigDirectory()}\\{DatabaseName}");
+            SqliteStorage = new(this, $"{PluginInterface.GetPluginConfigDirectory()}\\{SqliteDatabaseName}");
             CCCache = new(this);
             FLCache = new(this);
             RWCache = new(this);
@@ -175,6 +179,9 @@ public sealed class Plugin : IDalamudPlugin {
             CommandManager.AddHandler(LastMatchCommandName, new CommandInfo(OnLastMatchCommand) {
                 HelpMessage = "Opens match details window of last played match."
             });
+            CommandManager.AddHandler(CsvExportCommandName, new CommandInfo(OnCsvExportCommand) {
+                HelpMessage = "Export Crystalline Conflict match history to CSV."
+            });
 
 #if DEBUG
             CommandManager.AddHandler(DebugCommandName, new CommandInfo(OnDebugCommand) {
@@ -200,6 +207,7 @@ public sealed class Plugin : IDalamudPlugin {
         CommandManager.RemoveHandler(CCStatsCommandName);
         CommandManager.RemoveHandler(FLStatsCommandName);
         CommandManager.RemoveHandler(ConfigCommandName);
+        CommandManager.RemoveHandler(CsvExportCommandName);
 
         Functions?.Dispose();
         CCMatchManager?.Dispose();
@@ -207,6 +215,7 @@ public sealed class Plugin : IDalamudPlugin {
         RWMatchManager?.Dispose();
         WindowManager?.Dispose();
         Storage?.Dispose();
+        SqliteStorage?.Dispose();
         DataQueue?.Dispose();
         GameState?.Dispose();
 
@@ -253,6 +262,21 @@ public sealed class Plugin : IDalamudPlugin {
 
     private void OnConfigCommand(string command, string args) {
         WindowManager.OpenConfigWindow();
+    }
+
+    private void OnCsvExportCommand(string command, string args) {
+        var stamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
+        var dir = Path.Combine(PluginInterface.GetPluginConfigDirectory(), "exports");
+        var outPath = Path.Combine(dir, $"cc-matches-{stamp}.csv");
+        Task.Run(() => {
+            var written = SqliteStorage.ExportCCToCsv(outPath);
+            if (written != null) {
+                ChatGui.Print($"[PvP Tracker] CC matches exported to {written}");
+                Log.Information($"CSV export written to {written}");
+            } else {
+                ChatGui.PrintError("[PvP Tracker] CSV export failed; see /xllog for details.");
+            }
+        });
     }
 
 #if DEBUG

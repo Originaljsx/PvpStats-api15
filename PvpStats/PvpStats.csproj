@@ -3,12 +3,40 @@
 	<PropertyGroup>
 		<Authors>SaMo (fork: Originaljsx)</Authors>
 		<Company></Company>
-		<Version>2.6.2.4</Version>
+		<Version>2.6.3.0</Version>
 		<Description>Pvp Stats — Dalamud API 15 community fork</Description>
 		<Copyright></Copyright>
 		<PackageProjectUrl></PackageProjectUrl>
 		<AssemblyName>PvpStatsApi15</AssemblyName>
+		<RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
 	</PropertyGroup>
+
+	<Target Name="StripNonWinX64Natives" AfterTargets="CopyFilesToOutputDirectory" BeforeTargets="DalamudPackagerStart">
+		<ItemGroup>
+			<_RuntimesToTrim Include="$(OutDir)runtimes\linux-arm\**\*" />
+			<_RuntimesToTrim Include="$(OutDir)runtimes\linux-arm64\**\*" />
+			<_RuntimesToTrim Include="$(OutDir)runtimes\linux-armel\**\*" />
+			<_RuntimesToTrim Include="$(OutDir)runtimes\linux-mips64\**\*" />
+			<_RuntimesToTrim Include="$(OutDir)runtimes\linux-musl-arm\**\*" />
+			<_RuntimesToTrim Include="$(OutDir)runtimes\linux-musl-arm64\**\*" />
+			<_RuntimesToTrim Include="$(OutDir)runtimes\linux-musl-s390x\**\*" />
+			<_RuntimesToTrim Include="$(OutDir)runtimes\linux-musl-x64\**\*" />
+			<_RuntimesToTrim Include="$(OutDir)runtimes\linux-ppc64le\**\*" />
+			<_RuntimesToTrim Include="$(OutDir)runtimes\linux-s390x\**\*" />
+			<_RuntimesToTrim Include="$(OutDir)runtimes\linux-x64\**\*" />
+			<_RuntimesToTrim Include="$(OutDir)runtimes\linux-x86\**\*" />
+			<_RuntimesToTrim Include="$(OutDir)runtimes\maccatalyst-arm64\**\*" />
+			<_RuntimesToTrim Include="$(OutDir)runtimes\maccatalyst-x64\**\*" />
+			<_RuntimesToTrim Include="$(OutDir)runtimes\osx-arm64\**\*" />
+			<_RuntimesToTrim Include="$(OutDir)runtimes\osx-x64\**\*" />
+			<_RuntimesToTrim Include="$(OutDir)runtimes\win-arm\**\*" />
+			<_RuntimesToTrim Include="$(OutDir)runtimes\win-arm64\**\*" />
+			<_RuntimesToTrim Include="$(OutDir)runtimes\win-x86\**\*" />
+			<_RuntimesToTrim Include="$(OutDir)runtimes\browser-wasm\**\*" />
+		</ItemGroup>
+		<Delete Files="@(_RuntimesToTrim)" />
+		<RemoveDir Directories="$(OutDir)runtimes\linux-arm;$(OutDir)runtimes\linux-arm64;$(OutDir)runtimes\linux-armel;$(OutDir)runtimes\linux-mips64;$(OutDir)runtimes\linux-musl-arm;$(OutDir)runtimes\linux-musl-arm64;$(OutDir)runtimes\linux-musl-s390x;$(OutDir)runtimes\linux-musl-x64;$(OutDir)runtimes\linux-ppc64le;$(OutDir)runtimes\linux-s390x;$(OutDir)runtimes\linux-x64;$(OutDir)runtimes\linux-x86;$(OutDir)runtimes\maccatalyst-arm64;$(OutDir)runtimes\maccatalyst-x64;$(OutDir)runtimes\osx-arm64;$(OutDir)runtimes\osx-x64;$(OutDir)runtimes\win-arm;$(OutDir)runtimes\win-arm64;$(OutDir)runtimes\win-x86;$(OutDir)runtimes\browser-wasm" />
+	</Target>
 	<ItemGroup>
 		<Content Include="..\images\background\*.png">
 			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
@@ -20,5 +48,6 @@
 	</PropertyGroup>
 	<ItemGroup>
 		<PackageReference Include="LiteDB" Version="5.0.16" />
+		<PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.0" />
 	</ItemGroup>
 </Project>
