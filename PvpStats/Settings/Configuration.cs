@@ -15,6 +15,17 @@ public class Configuration : IPluginConfiguration {
     public static readonly int CurrentVersion = 0;
     public int Version { get; set; } = CurrentVersion;
     public string LastPluginVersion { get; set; } = "0.0.0.0";
+    /// <summary>
+    /// Directory containing IINACT Network_*.log files. Empty = auto-detect ~/Documents/IINACT.
+    /// Used by the CC event ingestor (Phase B step 2+) to capture per-tick combat events
+    /// during a Crystalline Conflict match. Disabled when the directory is missing.
+    /// </summary>
+    public string IinactLogDirectory { get; set; } = "";
+    /// <summary>
+    /// Master toggle for IINACT log ingestion. When false, the plugin behaves exactly
+    /// as before — no log file is opened, no events are captured.
+    /// </summary>
+    public bool EnableIinactCapture { get; set; } = true;
     public bool? EnableDBCachingCC { get; set; }
     public bool? EnableDBCachingFL { get; set; }
     public bool? EnableDBCachingRW { get; set; }

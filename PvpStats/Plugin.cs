@@ -69,6 +69,8 @@ public sealed class Plugin : IDalamudPlugin {
     internal LocalizationService Localization { get; init; }
     internal StorageService Storage { get; init; }
     internal SqliteStorageService SqliteStorage { get; init; }
+    internal Services.Logging.IinactLogWatcher? IinactWatcher { get; init; }
+    internal Services.Logging.CcEventIngestor? CcEventIngestor { get; init; }
     internal CCMatchCacheService CCCache { get; init; }
     internal FLMatchCacheService FLCache { get; init; }
     internal RWMatchCacheService RWCache { get; init; }
@@ -132,6 +134,19 @@ public sealed class Plugin : IDalamudPlugin {
             DataQueue = new();
             Storage = new(this, $"{PluginInterface.GetPluginConfigDirectory()}\\{DatabaseName}");
             SqliteStorage = new(this, $"{PluginInterface.GetPluginConfigDirectory()}\\{SqliteDatabaseName}");
+
+            if (Configuration.EnableIinactCapture) {
+                var iinactDir = string.IsNullOrWhiteSpace(Configuration.IinactLogDirectory)
+                    ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "IINACT")
+                    : Configuration.IinactLogDirectory;
+                IinactWatcher = new Services.Logging.IinactLogWatcher(this, iinactDir);
+                CcEventIngestor = new Services.Logging.CcEventIngestor(this, IinactWatcher);
+                IinactWatcher.Start();
+                Log.Information($"[Plugin] IINACT capture enabled, log dir: {iinactDir}");
+            } else {
+                Log.Information("[Plugin] IINACT capture disabled by config — Phase B advanced stats unavailable.");
+            }
+
             CCCache = new(this);
             FLCache = new(this);
             RWCache = new(this);
@@ -214,6 +229,8 @@ public sealed class Plugin : IDalamudPlugin {
         FLMatchManager?.Dispose();
         RWMatchManager?.Dispose();
         WindowManager?.Dispose();
+        CcEventIngestor?.Dispose();
+        IinactWatcher?.Dispose();
         Storage?.Dispose();
         SqliteStorage?.Dispose();
         DataQueue?.Dispose();

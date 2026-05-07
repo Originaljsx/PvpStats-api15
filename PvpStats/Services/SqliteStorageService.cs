@@ -121,6 +121,62 @@ CREATE INDEX IF NOT EXISTS idx_match_events_type ON match_events(match_id, event
         }
     }
 
+    /// <summary>
+    /// Bulk-insert match_events rows in a single transaction. Caller is responsible
+    /// for ordering events by sequence within the match.
+    /// </summary>
+    internal async Task RecordMatchEventsAsync(string matchId, IEnumerable<MatchEventRow> events) {
+        if (string.IsNullOrEmpty(matchId)) return;
+        var list = events as IList<MatchEventRow> ?? events.ToList();
+        if (list.Count == 0) return;
+
+        await _writeLock.WaitAsync();
+        try {
+            using var conn = Open();
+            using var tx = conn.BeginTransaction();
+            using var ins = conn.CreateCommand();
+            ins.Transaction = tx;
+            ins.CommandText = @"
+INSERT OR REPLACE INTO match_events (
+    match_id, seq, timestamp_utc, event_type, actor_name, target_name,
+    ability_id, ability_name, amount, flags_json
+) VALUES (
+    $match_id, $seq, $ts, $event_type, $actor, $target,
+    $ability_id, $ability_name, $amount, $flags
+);
+";
+            var pMatch = ins.Parameters.Add("$match_id", SqliteType.Text);
+            var pSeq = ins.Parameters.Add("$seq", SqliteType.Integer);
+            var pTs = ins.Parameters.Add("$ts", SqliteType.Text);
+            var pEt = ins.Parameters.Add("$event_type", SqliteType.Text);
+            var pActor = ins.Parameters.Add("$actor", SqliteType.Text);
+            var pTarget = ins.Parameters.Add("$target", SqliteType.Text);
+            var pAbId = ins.Parameters.Add("$ability_id", SqliteType.Integer);
+            var pAbN = ins.Parameters.Add("$ability_name", SqliteType.Text);
+            var pAmt = ins.Parameters.Add("$amount", SqliteType.Integer);
+            var pFlags = ins.Parameters.Add("$flags", SqliteType.Text);
+
+            pMatch.Value = matchId;
+            foreach (var e in list) {
+                pSeq.Value = e.Seq;
+                pTs.Value = e.TimestampUtcIso;
+                pEt.Value = e.EventType ?? string.Empty;
+                pActor.Value = (object?)e.ActorName ?? DBNull.Value;
+                pTarget.Value = (object?)e.TargetName ?? DBNull.Value;
+                pAbId.Value = (object?)e.AbilityId ?? DBNull.Value;
+                pAbN.Value = (object?)e.AbilityName ?? DBNull.Value;
+                pAmt.Value = (object?)e.Amount ?? DBNull.Value;
+                pFlags.Value = (object?)e.FlagsJson ?? DBNull.Value;
+                ins.ExecuteNonQuery();
+            }
+            tx.Commit();
+        } catch (Exception ex) {
+            _plugin.Log.Error(ex, $"Failed to bulk-insert match_events for match {matchId}.");
+        } finally {
+            _writeLock.Release();
+        }
+    }
+
     internal async Task RecordCCMatchAsync(CrystallineConflictMatch match) {
         if (match?.Id == null) return;
         await _writeLock.WaitAsync();
@@ -293,6 +349,19 @@ INSERT INTO match_players (
                 };
             }
         }
+    }
+
+    /// <summary>Lightweight DTO for batch event inserts.</summary>
+    internal sealed class MatchEventRow {
+        public required long Seq;
+        public required string TimestampUtcIso;
+        public required string EventType;
+        public string? ActorName;
+        public string? TargetName;
+        public int? AbilityId;
+        public string? AbilityName;
+        public long? Amount;
+        public string? FlagsJson;
     }
 
     private sealed class FlatPlayer {

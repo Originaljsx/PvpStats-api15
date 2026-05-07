@@ -7,7 +7,7 @@
   "RepoUrl": "https://github.com/Originaljsx/PvpStats-api15",
   "ApplicableVersion": "any",
   "DalamudApiLevel": 15,
-  "Changelog": "* New SQLite mirror DB at pluginConfigs/PvpStatsApi15/stats.sqlite; every CC match is written there alongside LiteDB.\n* New /pvpstatscsv command: exports completed CC matches (one row per match-player) to pluginConfigs/PvpStatsApi15/exports/cc-matches-{timestamp}.csv.\n* Foundation for upcoming advanced stats (effective shielding, mit, etc.) sourced from local IINACT logs.",
+  "Changelog": "* IINACT log capture: during CC matches, ability/death/buff events are tailed from ~/Documents/IINACT/Network_*.log and stored in stats.sqlite match_events.\n* New config fields IinactLogDirectory and EnableIinactCapture (toggleable; default on, defaults to ~/Documents/IINACT).\n* Capture is buffered, scoped to each CC match window, and flushed in batches — no main-thread cost during a match. Foundation for the effective-shielding rollup (next iteration).",
   "Tags": [
     "pvp",
     "statistics"

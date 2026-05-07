@@ -165,6 +165,9 @@ internal class CrystallineConflictMatchManager : IDisposable {
             _plugin.DataQueue.QueueDataOperation(async () => {
                 await _plugin.CCCache.AddMatch(_currentMatch);
                 await _plugin.Storage.AddCCTimeline(_currentMatchTimeline);
+                // Begin IINACT-based event capture for the match. The Id is set by the
+                // LiteDB insert in AddMatch above, so we do this after the await.
+                _plugin.CcEventIngestor?.StartCapture(_currentMatch.Id.ToString());
             });
         });
     }
@@ -624,6 +627,9 @@ internal class CrystallineConflictMatchManager : IDisposable {
                 if(_currentMatchTimeline != null) {
                     await _plugin.Storage.UpdateCCTimeline(_currentMatchTimeline);
                 }
+                if (_plugin.CcEventIngestor != null) {
+                    await _plugin.CcEventIngestor.StopCaptureAndFlushAsync();
+                }
                 _ = _plugin.WindowManager.RefreshCCWindow();
             }
         });
@@ -647,6 +653,9 @@ internal class CrystallineConflictMatchManager : IDisposable {
                 await _plugin.CCCache.UpdateMatch(_currentMatch!);
                 if(_currentMatchTimeline != null) {
                     await _plugin.Storage.UpdateCCTimeline(_currentMatchTimeline);
+                }
+                if (_plugin.CcEventIngestor != null) {
+                    await _plugin.CcEventIngestor.StopCaptureAndFlushAsync();
                 }
                 _ = _plugin.WindowManager.RefreshCCWindow();
             }
