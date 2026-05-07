@@ -7,7 +7,7 @@
   "RepoUrl": "https://github.com/Originaljsx/PvpStats-api15",
   "ApplicableVersion": "any",
   "DalamudApiLevel": 15,
-  "Changelog": "* IINACT log capture: during CC matches, ability/death/buff events are tailed from ~/Documents/IINACT/Network_*.log and stored in stats.sqlite match_events.\n* New config fields IinactLogDirectory and EnableIinactCapture (toggleable; default on, defaults to ~/Documents/IINACT).\n* Capture is buffered, scoped to each CC match window, and flushed in batches — no main-thread cost during a match. Foundation for the effective-shielding rollup (next iteration).",
+  "Changelog": "* End-of-match per-player rollup: counts of events involving each player, buff applies/removes initiated, deaths caused/suffered, plus the sum of buff Param values applied (a starting proxy for shield potential — true effective shielding requires decoding obfuscated NetworkAbility damage values, planned for next iteration).\n* New /pvpstatsrollup command re-runs the rollup over every completed CC match (useful after upgrading).\n* Fixed source/target field positions and Param capture for status apply/remove events.\n* CSV export now includes the seven new rollup columns.",
   "Tags": [
     "pvp",
     "statistics"

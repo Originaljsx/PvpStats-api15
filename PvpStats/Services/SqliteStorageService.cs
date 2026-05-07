@@ -114,10 +114,42 @@ CREATE TABLE IF NOT EXISTS match_events (
 CREATE INDEX IF NOT EXISTS idx_matches_mode_start ON matches(mode, duty_start);
 CREATE INDEX IF NOT EXISTS idx_match_players_name ON match_players(name, world);
 CREATE INDEX IF NOT EXISTS idx_match_events_type ON match_events(match_id, event_type);
+CREATE INDEX IF NOT EXISTS idx_match_events_actor ON match_events(match_id, actor_name);
+CREATE INDEX IF NOT EXISTS idx_match_events_target ON match_events(match_id, target_name);
 ";
             cmd.ExecuteNonQuery();
+
+            // Additive column migrations for Phase B step 3 (rollup metrics).
+            // SQLite can't add a column conditionally in pure DDL, so use PRAGMA + ALTER TABLE.
+            EnsureColumn(conn, "match_players", "events_involving_player", "INTEGER");
+            EnsureColumn(conn, "match_players", "buff_param_applied_sum", "INTEGER");
+            EnsureColumn(conn, "match_players", "buff_apply_count", "INTEGER");
+            EnsureColumn(conn, "match_players", "buff_remove_count", "INTEGER");
+            EnsureColumn(conn, "match_players", "deaths_caused", "INTEGER");
+            EnsureColumn(conn, "match_players", "deaths_suffered_in_log", "INTEGER");
+            EnsureColumn(conn, "match_players", "rolled_up_at_utc", "TEXT");
         } catch (Exception ex) {
             _plugin.Log.Error(ex, $"SQLite schema init failed at {_dbPath}.");
+        }
+    }
+
+    private void EnsureColumn(SqliteConnection conn, string table, string column, string typeDecl) {
+        try {
+            using var info = conn.CreateCommand();
+            info.CommandText = $"PRAGMA table_info({table});";
+            using var rdr = info.ExecuteReader();
+            while (rdr.Read()) {
+                if (string.Equals(rdr.GetString(1), column, StringComparison.OrdinalIgnoreCase)) {
+                    return; // already present
+                }
+            }
+        } catch { /* fall through to ALTER attempt */ }
+        try {
+            using var alter = conn.CreateCommand();
+            alter.CommandText = $"ALTER TABLE {table} ADD COLUMN {column} {typeDecl};";
+            alter.ExecuteNonQuery();
+        } catch (Exception ex) {
+            _plugin.Log.Warning(ex, $"Failed to ALTER TABLE {table} ADD COLUMN {column}: column may already exist.");
         }
     }
 
@@ -380,6 +412,131 @@ INSERT INTO match_players (
     }
 
     /// <summary>
+    /// Compute and write per-player rollup metrics for a single match. This is a
+    /// *framework* iteration — metrics here are simple aggregates over match_events
+    /// (event involvement counts, buff Param sums, kill/death counts). Real
+    /// FFLogs-style effective_shielding will land in a follow-up that decodes the
+    /// FFXIV-obfuscated damage values and absorbed flags inside NetworkAbility
+    /// effect entries.
+    /// </summary>
+    internal async Task RollupCCMatchAsync(string matchId) {
+        if (string.IsNullOrEmpty(matchId)) return;
+        await _writeLock.WaitAsync();
+        try {
+            using var conn = Open();
+            using var tx = conn.BeginTransaction();
+
+            // Per-player buff_apply param sum + buff counts (where this player was the source/applier).
+            using (var cmd = conn.CreateCommand()) {
+                cmd.Transaction = tx;
+                cmd.CommandText = @"
+UPDATE match_players AS p
+SET
+    buff_param_applied_sum = COALESCE((
+        SELECT SUM(amount)
+        FROM match_events e
+        WHERE e.match_id = p.match_id
+          AND e.event_type = 'buff_apply'
+          AND e.actor_name = p.name
+    ), 0),
+    buff_apply_count = COALESCE((
+        SELECT COUNT(*)
+        FROM match_events e
+        WHERE e.match_id = p.match_id
+          AND e.event_type = 'buff_apply'
+          AND e.actor_name = p.name
+    ), 0),
+    buff_remove_count = COALESCE((
+        SELECT COUNT(*)
+        FROM match_events e
+        WHERE e.match_id = p.match_id
+          AND e.event_type = 'buff_remove'
+          AND e.actor_name = p.name
+    ), 0)
+WHERE p.match_id = $match_id;
+";
+                cmd.Parameters.AddWithValue("$match_id", matchId);
+                cmd.ExecuteNonQuery();
+            }
+
+            // Per-player deaths suffered (target of a death event) and deaths caused (actor of a death event).
+            using (var cmd = conn.CreateCommand()) {
+                cmd.Transaction = tx;
+                cmd.CommandText = @"
+UPDATE match_players AS p
+SET
+    deaths_suffered_in_log = COALESCE((
+        SELECT COUNT(*)
+        FROM match_events e
+        WHERE e.match_id = p.match_id
+          AND e.event_type = 'death'
+          AND e.target_name = p.name
+    ), 0),
+    deaths_caused = COALESCE((
+        SELECT COUNT(*)
+        FROM match_events e
+        WHERE e.match_id = p.match_id
+          AND e.event_type = 'death'
+          AND e.actor_name = p.name
+    ), 0)
+WHERE p.match_id = $match_id;
+";
+                cmd.Parameters.AddWithValue("$match_id", matchId);
+                cmd.ExecuteNonQuery();
+            }
+
+            // Total events that mention this player in either role — sanity-check metric.
+            using (var cmd = conn.CreateCommand()) {
+                cmd.Transaction = tx;
+                cmd.CommandText = @"
+UPDATE match_players AS p
+SET
+    events_involving_player = COALESCE((
+        SELECT COUNT(*)
+        FROM match_events e
+        WHERE e.match_id = p.match_id
+          AND (e.actor_name = p.name OR e.target_name = p.name)
+    ), 0),
+    rolled_up_at_utc = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE p.match_id = $match_id;
+";
+                cmd.Parameters.AddWithValue("$match_id", matchId);
+                cmd.ExecuteNonQuery();
+            }
+
+            tx.Commit();
+        } catch (Exception ex) {
+            _plugin.Log.Error(ex, $"Rollup failed for match {matchId}.");
+        } finally {
+            _writeLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Re-run the rollup for every completed CC match. Useful after schema/algorithm changes.
+    /// Returns count of matches processed.
+    /// </summary>
+    internal async Task<int> RollupAllCCMatchesAsync() {
+        var matchIds = new List<string>();
+        try {
+            using var conn = Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "SELECT id FROM matches WHERE mode = 'cc' AND is_completed = 1 AND is_deleted = 0;";
+            using var rdr = cmd.ExecuteReader();
+            while (rdr.Read()) matchIds.Add(rdr.GetString(0));
+        } catch (Exception ex) {
+            _plugin.Log.Error(ex, "Failed to enumerate matches for rollup.");
+            return 0;
+        }
+        var done = 0;
+        foreach (var id in matchIds) {
+            await RollupCCMatchAsync(id);
+            done++;
+        }
+        return done;
+    }
+
+    /// <summary>
     /// Streams a CSV containing one row per (match × player) for completed CC matches.
     /// Returns the path written to, or null on failure.
     /// </summary>
@@ -396,7 +553,9 @@ SELECT
     p.player_idx, p.name, p.world, p.job, p.team,
     p.kills, p.deaths, p.assists,
     p.damage_dealt, p.damage_taken, p.hp_restored, p.time_on_crystal_seconds,
-    p.effective_shielding, p.effective_mitigation, p.overheal
+    p.effective_shielding, p.effective_mitigation, p.overheal,
+    p.events_involving_player, p.buff_param_applied_sum, p.buff_apply_count, p.buff_remove_count,
+    p.deaths_caused, p.deaths_suffered_in_log, p.rolled_up_at_utc
 FROM matches m
 JOIN match_players p ON p.match_id = m.id
 WHERE m.mode = 'cc' AND m.is_deleted = 0 AND m.is_completed = 1

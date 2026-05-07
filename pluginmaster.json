@@ -5,7 +5,7 @@
     "Punchline": "PvP match history and stats tracker — Dalamud API 15 fork.",
     "Description": "Record, browse and filter your Crystalline Conflict, Frontline and Rival Wings match history, view match scoreboards and view aggregated statistics like win rate and average damage dealt per match. Community fork of wrath16/PvpStats restoring compatibility with Dalamud API 15 (FFXIV patch 7.5).",
     "InternalName": "PvpStatsApi15",
-    "AssemblyVersion": "2.6.4.0",
+    "AssemblyVersion": "2.6.5.0",
     "TestingAssemblyVersion": null,
     "RepoUrl": "https://github.com/Originaljsx/PvpStats-api15",
     "ApplicableVersion": "any",
@@ -16,6 +16,6 @@
     "DownloadLinkUpdate": "https://github.com/Originaljsx/PvpStats-api15/releases/latest/download/latest.zip",
     "DownloadLinkTesting": "https://github.com/Originaljsx/PvpStats-api15/releases/latest/download/latest.zip",
     "IconUrl": "https://raw.githubusercontent.com/Originaljsx/PvpStats-api15/master/images/icon.png",
-    "Changelog": "Phase B step 2: IINACT log capture. During CC matches, ability/death/buff events are tailed from ~/Documents/IINACT/Network_*.log and stored in match_events. Foundation for the effective-shielding rollup."
+    "Changelog": "Phase B step 3 (framework): per-player event rollup at match end + /pvpstatsrollup command for retroactive runs. Buff Param sum is a first-pass shield potential metric; true effective_shielding (FFLogs-style with absorbed-flag parsing) is the next iteration."
   }
 ]

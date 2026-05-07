@@ -123,23 +123,33 @@ internal sealed class CcEventIngestor : IDisposable {
             FlagsJson = line.Raw,
         };
 
-        // Best-effort field extraction. Step 3 will do precise parsing per type.
+        // Field positions per OverlayPlugin/cactbot LogGuide. ActLogLine.Field(N)
+        // returns the Nth field after type+timestamp.
         switch (line.Type) {
             case 21: case 22: // NetworkAbility / NetworkAOEAbility
+                // Field(1)=casterId, Field(2)=casterName, Field(3)=abilityIdHex,
+                // Field(4)=abilityName, Field(5)=targetId, Field(6)=targetName.
+                // (Cactbot's "Index N" maps to ActLogLine.Field(N-1).)
                 row.ActorName = NullIfEmpty(line.Field(1));
                 row.TargetName = NullIfEmpty(line.Field(5));
                 row.AbilityId = (int)line.FieldHex(2);
                 row.AbilityName = NullIfEmpty(line.Field(3));
                 break;
-            case 25: // NetworkDeath
+            case 25: // NetworkDeath: Field(0)=victimId, Field(1)=victimName, Field(2)=killerId, Field(3)=killerName
                 row.TargetName = NullIfEmpty(line.Field(1));
                 row.ActorName = NullIfEmpty(line.Field(3));
                 break;
-            case 26: case 30: // NetworkBuff / NetworkBuffRemove
+            case 26: case 30:
+                // NetworkBuff / NetworkBuffRemove:
+                // Field(0)=statusIdHex, Field(1)=statusName, Field(2)=duration,
+                // Field(3)=sourceId, Field(4)=sourceName, Field(5)=targetId,
+                // Field(6)=targetName, Field(7)=stackCount/Param (shield value
+                // for shield-type statuses).
                 row.AbilityId = (int)line.FieldHex(0);
                 row.AbilityName = NullIfEmpty(line.Field(1));
-                row.ActorName = NullIfEmpty(line.Field(5));
-                row.TargetName = NullIfEmpty(line.Field(3));
+                row.ActorName = NullIfEmpty(line.Field(4));
+                row.TargetName = NullIfEmpty(line.Field(6));
+                row.Amount = line.FieldInt(7);
                 break;
         }
 

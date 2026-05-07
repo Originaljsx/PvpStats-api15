@@ -34,6 +34,7 @@ public sealed class Plugin : IDalamudPlugin {
     private const string ConfigCommandName = "/pvpstatsconfig";
     private const string LastMatchCommandName = "/lastmatch";
     private const string CsvExportCommandName = "/pvpstatscsv";
+    private const string RollupCommandName = "/pvpstatsrollup";
 
     internal static IPluginLog Log2;
 
@@ -197,6 +198,9 @@ public sealed class Plugin : IDalamudPlugin {
             CommandManager.AddHandler(CsvExportCommandName, new CommandInfo(OnCsvExportCommand) {
                 HelpMessage = "Export Crystalline Conflict match history to CSV."
             });
+            CommandManager.AddHandler(RollupCommandName, new CommandInfo(OnRollupCommand) {
+                HelpMessage = "Re-run the per-player event rollup over every completed CC match."
+            });
 
 #if DEBUG
             CommandManager.AddHandler(DebugCommandName, new CommandInfo(OnDebugCommand) {
@@ -223,6 +227,7 @@ public sealed class Plugin : IDalamudPlugin {
         CommandManager.RemoveHandler(FLStatsCommandName);
         CommandManager.RemoveHandler(ConfigCommandName);
         CommandManager.RemoveHandler(CsvExportCommandName);
+        CommandManager.RemoveHandler(RollupCommandName);
 
         Functions?.Dispose();
         CCMatchManager?.Dispose();
@@ -279,6 +284,19 @@ public sealed class Plugin : IDalamudPlugin {
 
     private void OnConfigCommand(string command, string args) {
         WindowManager.OpenConfigWindow();
+    }
+
+    private void OnRollupCommand(string command, string args) {
+        Task.Run(async () => {
+            try {
+                var n = await SqliteStorage.RollupAllCCMatchesAsync();
+                ChatGui.Print($"[PvP Tracker] Rolled up {n} CC matches.");
+                Log.Information($"Rollup-all completed: {n} matches.");
+            } catch (Exception ex) {
+                ChatGui.PrintError("[PvP Tracker] Rollup failed; see /xllog.");
+                Log.Error(ex, "Rollup-all failed.");
+            }
+        });
     }
 
     private void OnCsvExportCommand(string command, string args) {

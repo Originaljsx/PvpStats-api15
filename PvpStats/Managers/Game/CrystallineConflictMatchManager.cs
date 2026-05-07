@@ -629,6 +629,9 @@ internal class CrystallineConflictMatchManager : IDisposable {
                 }
                 if (_plugin.CcEventIngestor != null) {
                     await _plugin.CcEventIngestor.StopCaptureAndFlushAsync();
+                    if (_currentMatch?.Id != null) {
+                        await _plugin.SqliteStorage.RollupCCMatchAsync(_currentMatch.Id.ToString());
+                    }
                 }
                 _ = _plugin.WindowManager.RefreshCCWindow();
             }
@@ -656,6 +659,9 @@ internal class CrystallineConflictMatchManager : IDisposable {
                 }
                 if (_plugin.CcEventIngestor != null) {
                     await _plugin.CcEventIngestor.StopCaptureAndFlushAsync();
+                    if (_currentMatch?.Id != null) {
+                        await _plugin.SqliteStorage.RollupCCMatchAsync(_currentMatch.Id.ToString());
+                    }
                 }
                 _ = _plugin.WindowManager.RefreshCCWindow();
             }
