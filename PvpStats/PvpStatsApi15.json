@@ -7,7 +7,7 @@
   "RepoUrl": "https://github.com/Originaljsx/PvpStats-api15",
   "ApplicableVersion": "any",
   "DalamudApiLevel": 15,
-  "Changelog": "* Damage encoding decoded — verified against a real CC match log: damage = (effect-03 value) >> 16. Captured 21/22 events now have a real numeric Amount (sum of all damage hits in the line) plus heal_amount (lifesteal) and an absorbed flag (any effect-03 had value=0).\n* Captured event types expanded to 37 (NetworkActionSync), 38 (NetworkStatusEffect), 39 (NetworkUpdateHp) for shield/HP analysis.\n* Five new exact rollup metrics: damage_dealt_log, damage_taken_log, heal_dealt_log, zero_damage_hits_dealt, zero_damage_hits_taken.\n* CSV export includes the new columns.\n* Bug fix: type-26 buff Param now correctly read as hex.",
+  "Changelog": "* Layer 2 — shield-aware metrics. Curated catalog of shield-applying status IDs (Galvanize, Catalyze, Eukrasian Diagnosis/Prognosis, Heart of Stone/Light/Corundum, Divine Benison, Aquaveil, Sheltron, Holy Sheltron, Bloodwhetting, Oblation, Macrocosmos, etc.).\n* Four new rollup columns: shields_applied_count, shield_uptime_seconds, shielded_hits_taken (zero-damage hits while you were shielded), shielded_hits_caused_others (zero-damage hits on teammates whose shield YOU sourced).\n* CSV export includes the new columns.",
   "Tags": [
     "pvp",
     "statistics"

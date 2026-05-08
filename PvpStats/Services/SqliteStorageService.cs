@@ -136,6 +136,11 @@ CREATE INDEX IF NOT EXISTS idx_match_events_target ON match_events(match_id, tar
             EnsureColumn(conn, "match_players", "zero_damage_hits_taken", "INTEGER");
             EnsureColumn(conn, "match_events", "heal_amount", "INTEGER");
             EnsureColumn(conn, "match_events", "absorbed", "INTEGER DEFAULT 0");
+            // Layer 2 (v2.6.7.0): shield-aware metrics using the curated catalog.
+            EnsureColumn(conn, "match_players", "shields_applied_count", "INTEGER");
+            EnsureColumn(conn, "match_players", "shield_uptime_seconds", "REAL");
+            EnsureColumn(conn, "match_players", "shielded_hits_taken", "INTEGER");
+            EnsureColumn(conn, "match_players", "shielded_hits_caused_others", "INTEGER");
         } catch (Exception ex) {
             _plugin.Log.Error(ex, $"SQLite schema init failed at {_dbPath}.");
         }
@@ -518,6 +523,117 @@ WHERE p.match_id = $match_id;
                 cmd.ExecuteNonQuery();
             }
 
+            // Layer 2 (v2.6.7.0): shield-aware metrics using ShieldCatalog.
+            // shields_applied_count: number of shield-type buff_apply events sourced from this player
+            // shield_uptime_seconds: total seconds (apply -> remove pairs) of shield-type buffs this player applied
+            // shielded_hits_taken: count of damage=0 hits on this player while at least one shield-type buff was active on them
+            // shielded_hits_caused_others: same but where this player was the SHIELD source (the credit-worthy applier)
+            var shieldIdsCsv = Game.ShieldCatalog.SqlInList();
+            using (var cmd = conn.CreateCommand()) {
+                cmd.Transaction = tx;
+                cmd.CommandText = $@"
+UPDATE match_players AS p
+SET
+    shields_applied_count = COALESCE((
+        SELECT COUNT(*) FROM match_events e
+        WHERE e.match_id = p.match_id
+          AND e.event_type = 'buff_apply'
+          AND e.actor_name = p.name
+          AND e.ability_id IN ({shieldIdsCsv})
+    ), 0),
+    shield_uptime_seconds = COALESCE((
+        SELECT SUM(
+            CAST((julianday(rem.timestamp_utc) - julianday(app.timestamp_utc)) * 86400.0 AS REAL)
+        )
+        FROM match_events app
+        LEFT JOIN match_events rem
+          ON rem.match_id = app.match_id
+         AND rem.event_type = 'buff_remove'
+         AND rem.ability_id = app.ability_id
+         AND rem.target_name = app.target_name
+         AND rem.actor_name = app.actor_name
+         AND rem.seq > app.seq
+         AND NOT EXISTS (
+             SELECT 1 FROM match_events mid
+             WHERE mid.match_id = app.match_id
+               AND mid.event_type IN ('buff_apply', 'buff_remove')
+               AND mid.ability_id = app.ability_id
+               AND mid.target_name = app.target_name
+               AND mid.seq > app.seq AND mid.seq < rem.seq
+         )
+        WHERE app.match_id = p.match_id
+          AND app.event_type = 'buff_apply'
+          AND app.actor_name = p.name
+          AND app.ability_id IN ({shieldIdsCsv})
+          AND rem.seq IS NOT NULL
+    ), 0.0)
+WHERE p.match_id = $match_id;
+";
+                cmd.Parameters.AddWithValue("$match_id", matchId);
+                cmd.ExecuteNonQuery();
+            }
+
+            // shielded_hits_taken — for each absorbed (damage=0) hit on player p, was a shield-type
+            // status active on p at that moment? Approximated via "the most recent buff_apply for this
+            // status on p (before the hit) is not yet matched by a buff_remove (after the hit)".
+            using (var cmd = conn.CreateCommand()) {
+                cmd.Transaction = tx;
+                cmd.CommandText = $@"
+UPDATE match_players AS p
+SET
+    shielded_hits_taken = COALESCE((
+        SELECT COUNT(*) FROM match_events hit
+        WHERE hit.match_id = p.match_id
+          AND hit.event_type IN ('ability', 'ability_aoe')
+          AND hit.target_name = p.name
+          AND hit.absorbed = 1
+          AND EXISTS (
+              SELECT 1 FROM match_events sa
+              WHERE sa.match_id = hit.match_id
+                AND sa.event_type = 'buff_apply'
+                AND sa.target_name = hit.target_name
+                AND sa.ability_id IN ({shieldIdsCsv})
+                AND sa.seq < hit.seq
+                AND NOT EXISTS (
+                    SELECT 1 FROM match_events sr
+                    WHERE sr.match_id = sa.match_id
+                      AND sr.event_type = 'buff_remove'
+                      AND sr.ability_id = sa.ability_id
+                      AND sr.target_name = sa.target_name
+                      AND sr.seq > sa.seq AND sr.seq < hit.seq
+                )
+          )
+    ), 0),
+    shielded_hits_caused_others = COALESCE((
+        SELECT COUNT(*) FROM match_events hit
+        WHERE hit.match_id = p.match_id
+          AND hit.event_type IN ('ability', 'ability_aoe')
+          AND hit.absorbed = 1
+          AND hit.target_name <> p.name
+          AND EXISTS (
+              SELECT 1 FROM match_events sa
+              WHERE sa.match_id = hit.match_id
+                AND sa.event_type = 'buff_apply'
+                AND sa.actor_name = p.name
+                AND sa.target_name = hit.target_name
+                AND sa.ability_id IN ({shieldIdsCsv})
+                AND sa.seq < hit.seq
+                AND NOT EXISTS (
+                    SELECT 1 FROM match_events sr
+                    WHERE sr.match_id = sa.match_id
+                      AND sr.event_type = 'buff_remove'
+                      AND sr.ability_id = sa.ability_id
+                      AND sr.target_name = sa.target_name
+                      AND sr.seq > sa.seq AND sr.seq < hit.seq
+                )
+          )
+    ), 0)
+WHERE p.match_id = $match_id;
+";
+                cmd.Parameters.AddWithValue("$match_id", matchId);
+                cmd.ExecuteNonQuery();
+            }
+
             // Layer 1 (v2.6.6.0): exact damage / absorbed-hit metrics from log.
             // damage_dealt_log: sum of effect-03 damage values where this player was caster
             // damage_taken_log: same but as target
@@ -620,6 +736,8 @@ SELECT
     p.deaths_caused, p.deaths_suffered_in_log,
     p.damage_dealt_log, p.damage_taken_log, p.heal_dealt_log,
     p.zero_damage_hits_dealt, p.zero_damage_hits_taken,
+    p.shields_applied_count, p.shield_uptime_seconds,
+    p.shielded_hits_taken, p.shielded_hits_caused_others,
     p.rolled_up_at_utc
 FROM matches m
 JOIN match_players p ON p.match_id = m.id
