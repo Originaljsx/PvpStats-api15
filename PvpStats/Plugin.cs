@@ -137,9 +137,7 @@ public sealed class Plugin : IDalamudPlugin {
             SqliteStorage = new(this, $"{PluginInterface.GetPluginConfigDirectory()}\\{SqliteDatabaseName}");
 
             if (Configuration.EnableIinactCapture) {
-                var iinactDir = string.IsNullOrWhiteSpace(Configuration.IinactLogDirectory)
-                    ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "IINACT")
-                    : Configuration.IinactLogDirectory;
+                var iinactDir = ResolveIinactLogDirectory();
                 IinactWatcher = new Services.Logging.IinactLogWatcher(this, iinactDir);
                 CcEventIngestor = new Services.Logging.CcEventIngestor(this, IinactWatcher);
                 IinactWatcher.Start();
@@ -366,6 +364,52 @@ public sealed class Plugin : IDalamudPlugin {
         Configuration.LastPluginVersion = currentVersion?.ToString() ?? "0.0.0.0";
         Configuration.Save();
         Log2.Information("PvP Tracker initialized.");
+    }
+
+    /// <summary>
+    /// Pick the right IINACT log directory. On Windows with OneDrive Documents
+    /// redirection enabled, <c>SpecialFolder.MyDocuments</c> returns the
+    /// OneDrive-synced Documents path even though IINACT (and many other apps)
+    /// often write to the legacy <c>C:\Users\&lt;user&gt;\Documents\</c> directly.
+    /// We try every plausible candidate and pick whichever has the most-recently-
+    /// modified <c>Network_*.log</c> — i.e. whichever IINACT is actually writing to.
+    /// </summary>
+    private string ResolveIinactLogDirectory() {
+        if (!string.IsNullOrWhiteSpace(Configuration.IinactLogDirectory)) {
+            return Configuration.IinactLogDirectory;
+        }
+
+        var candidates = new List<string>();
+        var myDocs = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+        if (!string.IsNullOrEmpty(myDocs)) candidates.Add(Path.Combine(myDocs, "IINACT"));
+        var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (!string.IsNullOrEmpty(userProfile)) {
+            candidates.Add(Path.Combine(userProfile, "Documents", "IINACT"));
+            candidates.Add(Path.Combine(userProfile, "OneDrive", "Documents", "IINACT"));
+        }
+
+        string? best = null;
+        DateTime bestMtime = DateTime.MinValue;
+        foreach (var dir in candidates.Distinct(StringComparer.OrdinalIgnoreCase)) {
+            if (!Directory.Exists(dir)) continue;
+            try {
+                var newest = new DirectoryInfo(dir)
+                    .EnumerateFiles("Network_*.log")
+                    .OrderByDescending(f => f.LastWriteTimeUtc)
+                    .FirstOrDefault();
+                Log.Information($"[Plugin] IINACT candidate {dir}: newest={(newest == null ? "<none>" : newest.Name)} mtime={(newest == null ? "n/a" : newest.LastWriteTimeUtc.ToString("O"))}");
+                if (newest != null && newest.LastWriteTimeUtc > bestMtime) {
+                    bestMtime = newest.LastWriteTimeUtc;
+                    best = dir;
+                }
+            } catch (Exception ex) {
+                Log.Warning(ex, $"[Plugin] Error scanning IINACT candidate {dir}.");
+            }
+        }
+
+        if (best != null) return best;
+        // No candidate had any Network logs. Default to MyDocuments\IINACT — watcher will retry as files appear.
+        return candidates.FirstOrDefault() ?? Path.Combine(myDocs ?? string.Empty, "IINACT");
     }
 
     private void MigrateLegacyConfigIfNeeded() {
