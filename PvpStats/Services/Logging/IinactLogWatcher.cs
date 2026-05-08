@@ -212,10 +212,20 @@ internal sealed class IinactLogWatcher : IDisposable {
         }
     }
 
+    private int _parseFailures;
+    private int _parseFailuresLogged;
+
     private void EmitLine(string raw) {
         ActLogLine line;
         try { line = new ActLogLine(raw); }
-        catch { return; } // Skip malformed silently.
+        catch (Exception ex) {
+            Interlocked.Increment(ref _parseFailures);
+            if (Interlocked.Increment(ref _parseFailuresLogged) <= 5) {
+                var snippet = raw.Length > 120 ? raw[..120] + "..." : raw;
+                _plugin.Log.Warning($"[IinactLogWatcher] ActLogLine parse failure ({ex.GetType().Name}: {ex.Message}) on line: '{snippet}'");
+            }
+            return;
+        }
 
         var n = Interlocked.Increment(ref _linesRead);
         if (n == 1) {
