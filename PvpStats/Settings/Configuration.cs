@@ -22,6 +22,11 @@ public class Configuration : IPluginConfiguration {
     /// </summary>
     public string IinactLogDirectory { get; set; } = "";
     /// <summary>
+    /// IINACT's OverlayPlugin-compatible WebSocket URL. Empty = default
+    /// <c>ws://127.0.0.1:10501/ws</c>. Same protocol cactbot uses.
+    /// </summary>
+    public string IinactWebSocketUrl { get; set; } = "";
+    /// <summary>
     /// Master toggle for IINACT log ingestion. When false, the plugin behaves exactly
     /// as before — no log file is opened, no events are captured.
     /// </summary>

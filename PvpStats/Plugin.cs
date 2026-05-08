@@ -70,7 +70,7 @@ public sealed class Plugin : IDalamudPlugin {
     internal LocalizationService Localization { get; init; }
     internal StorageService Storage { get; init; }
     internal SqliteStorageService SqliteStorage { get; init; }
-    internal Services.Logging.IinactLogWatcher? IinactWatcher { get; init; }
+    internal Services.Logging.IinactWebSocketSource? IinactWS { get; init; }
     internal Services.Logging.CcEventIngestor? CcEventIngestor { get; init; }
     internal CCMatchCacheService CCCache { get; init; }
     internal FLMatchCacheService FLCache { get; init; }
@@ -137,11 +137,13 @@ public sealed class Plugin : IDalamudPlugin {
             SqliteStorage = new(this, $"{PluginInterface.GetPluginConfigDirectory()}\\{SqliteDatabaseName}");
 
             if (Configuration.EnableIinactCapture) {
-                var iinactDir = ResolveIinactLogDirectory();
-                IinactWatcher = new Services.Logging.IinactLogWatcher(this, iinactDir);
-                CcEventIngestor = new Services.Logging.CcEventIngestor(this, IinactWatcher);
-                IinactWatcher.Start();
-                Log.Information($"[Plugin] IINACT capture enabled, log dir: {iinactDir}");
+                var wsUrl = string.IsNullOrWhiteSpace(Configuration.IinactWebSocketUrl)
+                    ? "ws://127.0.0.1:10501/ws"
+                    : Configuration.IinactWebSocketUrl;
+                IinactWS = new Services.Logging.IinactWebSocketSource(this, wsUrl);
+                CcEventIngestor = new Services.Logging.CcEventIngestor(this, IinactWS);
+                IinactWS.Start();
+                Log.Information($"[Plugin] IINACT capture enabled via WebSocket: {wsUrl}");
             } else {
                 Log.Information("[Plugin] IINACT capture disabled by config — Phase B advanced stats unavailable.");
             }
@@ -233,7 +235,7 @@ public sealed class Plugin : IDalamudPlugin {
         RWMatchManager?.Dispose();
         WindowManager?.Dispose();
         CcEventIngestor?.Dispose();
-        IinactWatcher?.Dispose();
+        IinactWS?.Dispose();
         Storage?.Dispose();
         SqliteStorage?.Dispose();
         DataQueue?.Dispose();

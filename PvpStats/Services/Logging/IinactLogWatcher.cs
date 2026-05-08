@@ -17,7 +17,7 @@ namespace PvpStats.Services.Logging;
 /// <see cref="LineReceived"/>. Subscribers should be quick (callback runs on
 /// the watcher thread) — heavy work belongs on a queue.
 /// </summary>
-internal sealed class IinactLogWatcher : IDisposable {
+internal sealed class IinactLogWatcher : IDisposable, ILogEventSource {
     private readonly Plugin _plugin;
     private string _logDir;
     private readonly object _stateLock = new();

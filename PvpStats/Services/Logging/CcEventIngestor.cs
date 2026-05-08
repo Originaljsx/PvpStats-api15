@@ -32,7 +32,7 @@ internal sealed class CcEventIngestor : IDisposable {
     private static readonly HashSet<int> CapturedTypes = new() { 21, 22, 25, 26, 30, 37, 38, 39 };
 
     private readonly Plugin _plugin;
-    private readonly IinactLogWatcher _watcher;
+    private readonly ILogEventSource _watcher;
 
     private readonly object _lock = new();
     private string? _activeMatchId;
@@ -43,7 +43,7 @@ internal sealed class CcEventIngestor : IDisposable {
     public bool IsCapturing => _activeMatchId != null;
     public long EventsBufferedForCurrentMatch => _seq;
 
-    public CcEventIngestor(Plugin plugin, IinactLogWatcher watcher) {
+    public CcEventIngestor(Plugin plugin, ILogEventSource watcher) {
         _plugin = plugin;
         _watcher = watcher;
         _watcher.LineReceived += OnLine;
