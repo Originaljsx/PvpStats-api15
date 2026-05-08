@@ -7,7 +7,7 @@
   "RepoUrl": "https://github.com/Originaljsx/PvpStats-api15",
   "ApplicableVersion": "any",
   "DalamudApiLevel": 15,
-  "Changelog": "* TWO HEADLINE METRICS: shielding_done_log (HP-equivalent of shields you applied) and shielding_damage_mitigated_log (HP your shields absorbed during the match).\n* shielding_done is computed from a curated ShieldFormulaCatalog mapping shield-applying abilities to HP formulas: Adloquium = heal_amount × 1.0, Eukrasian Diagnosis = max_hp × 0.30, Divine Benison = max_hp × 0.50, etc.\n* shielding_damage_mitigated estimates the would-be damage of each absorbed hit using the median damage of that ability across non-absorbed hits in the match, credited to the shield's source player.\n* CSV export includes both new columns.",
+  "Changelog": "* New \"Advanced\" tab in the CC match detail window (the one /lastmatch and the per-match scoreboard open). Shows per-player Damage Dealt/Taken (log), Shielding Done, Shielding Mitigated, Mit Avoided, Amp Added, Shielded Hits Taken, Shields Applied — all sourced from SQLite.\n* Live re-run button on the tab: click \"Re-run rollup for this match\" to recompute after catalog tuning without leaving the game.",
   "Tags": [
     "pvp",
     "statistics"

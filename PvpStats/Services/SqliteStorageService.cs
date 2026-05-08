@@ -1044,6 +1044,84 @@ WHERE match_id = $match_id AND name = $name;";
         }
     }
 
+    /// <summary>Read-only DTO for the Phase B "Advanced" tab in the match detail UI.</summary>
+    internal sealed class CCAdvancedRow {
+        public string Name = "";
+        public string? Job;
+        public string? Team;
+        public long? DamageDealtLog;
+        public long? DamageTakenLog;
+        public long? HealDealtLog;
+        public long? ZeroDamageHitsDealt;
+        public long? ZeroDamageHitsTaken;
+        public long? ShieldsAppliedCount;
+        public double? ShieldUptimeSeconds;
+        public long? ShieldedHitsTaken;
+        public long? ShieldedHitsCausedOthers;
+        public long? DamageDealtRawLog;
+        public long? DamageTakenRawLog;
+        public long? DamageDealtAmpAdded;
+        public long? DamageTakenMitAvoided;
+        public long? ShieldingDoneLog;
+        public long? ShieldingDamageMitigatedLog;
+        public string? RolledUpAtUtc;
+    }
+
+    /// <summary>
+    /// Read the Phase B advanced metrics for one CC match's players. Used by the
+    /// in-game match detail window's Advanced tab. Returns rows in player_idx
+    /// order; missing matches return an empty list.
+    /// </summary>
+    internal List<CCAdvancedRow> GetCCAdvancedRows(string matchId) {
+        var result = new List<CCAdvancedRow>();
+        if (string.IsNullOrEmpty(matchId)) return result;
+        try {
+            using var conn = Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = @"
+SELECT name, job, team,
+    damage_dealt_log, damage_taken_log, heal_dealt_log,
+    zero_damage_hits_dealt, zero_damage_hits_taken,
+    shields_applied_count, shield_uptime_seconds,
+    shielded_hits_taken, shielded_hits_caused_others,
+    damage_dealt_raw_log, damage_taken_raw_log,
+    damage_dealt_amp_added, damage_taken_mit_avoided,
+    shielding_done_log, shielding_damage_mitigated_log,
+    rolled_up_at_utc
+FROM match_players
+WHERE match_id = $id
+ORDER BY player_idx;";
+            cmd.Parameters.AddWithValue("$id", matchId);
+            using var rdr = cmd.ExecuteReader();
+            while (rdr.Read()) {
+                result.Add(new CCAdvancedRow {
+                    Name = rdr.IsDBNull(0) ? "" : rdr.GetString(0),
+                    Job = rdr.IsDBNull(1) ? null : rdr.GetString(1),
+                    Team = rdr.IsDBNull(2) ? null : rdr.GetString(2),
+                    DamageDealtLog = rdr.IsDBNull(3) ? null : rdr.GetInt64(3),
+                    DamageTakenLog = rdr.IsDBNull(4) ? null : rdr.GetInt64(4),
+                    HealDealtLog = rdr.IsDBNull(5) ? null : rdr.GetInt64(5),
+                    ZeroDamageHitsDealt = rdr.IsDBNull(6) ? null : rdr.GetInt64(6),
+                    ZeroDamageHitsTaken = rdr.IsDBNull(7) ? null : rdr.GetInt64(7),
+                    ShieldsAppliedCount = rdr.IsDBNull(8) ? null : rdr.GetInt64(8),
+                    ShieldUptimeSeconds = rdr.IsDBNull(9) ? null : rdr.GetDouble(9),
+                    ShieldedHitsTaken = rdr.IsDBNull(10) ? null : rdr.GetInt64(10),
+                    ShieldedHitsCausedOthers = rdr.IsDBNull(11) ? null : rdr.GetInt64(11),
+                    DamageDealtRawLog = rdr.IsDBNull(12) ? null : rdr.GetInt64(12),
+                    DamageTakenRawLog = rdr.IsDBNull(13) ? null : rdr.GetInt64(13),
+                    DamageDealtAmpAdded = rdr.IsDBNull(14) ? null : rdr.GetInt64(14),
+                    DamageTakenMitAvoided = rdr.IsDBNull(15) ? null : rdr.GetInt64(15),
+                    ShieldingDoneLog = rdr.IsDBNull(16) ? null : rdr.GetInt64(16),
+                    ShieldingDamageMitigatedLog = rdr.IsDBNull(17) ? null : rdr.GetInt64(17),
+                    RolledUpAtUtc = rdr.IsDBNull(18) ? null : rdr.GetString(18),
+                });
+            }
+        } catch (Exception ex) {
+            _plugin.Log.Warning(ex, $"GetCCAdvancedRows failed for match {matchId}.");
+        }
+        return result;
+    }
+
     /// <summary>
     /// Re-run the rollup for every completed CC match. Useful after schema/algorithm changes.
     /// Returns count of matches processed.

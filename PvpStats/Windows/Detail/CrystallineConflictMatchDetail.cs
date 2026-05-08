@@ -646,6 +646,14 @@ internal class CrystallineConflictMatchDetail : MatchDetail<CrystallineConflictM
                             }
                         }
                     }
+                    using(var tab = ImRaii.TabItem("Advanced")) {
+                        if(tab) {
+                            if(CurrentTab != "Advanced") {
+                                CurrentTab = "Advanced";
+                            }
+                            DrawAdvanced();
+                        }
+                    }
                 }
             } else {
                 DrawScoreboard();
@@ -2179,4 +2187,88 @@ internal class CrystallineConflictMatchDetail : MatchDetail<CrystallineConflictM
         }
         return csv;
     }
+
+    /// <summary>
+    /// Phase B "Advanced" tab — surfaces SQLite-derived metrics that aren't
+    /// captured by the upstream LiteDB scoreboard:
+    ///   • Log-derived damage dealt/taken (from IINACT effect-03 entries)
+    ///   • Lifesteal (heal effects on attack abilities)
+    ///   • Shield activity: count + uptime + estimated HP shielded + HP absorbed
+    ///   • Damage normalization deltas (mit avoided / amp added)
+    /// Pulled live from %AppData%/.../PvpStatsApi15/stats.sqlite each frame.
+    /// If the rollup hasn't run for this match yet (older capture, no IINACT),
+    /// the table will show all zeros / blanks — run /pvpstatsrollup to backfill.
+    /// </summary>
+    private void DrawAdvanced() {
+        ImGui.NewLine();
+        var rows = Plugin.SqliteStorage.GetCCAdvancedRows(Match.Id?.ToString() ?? string.Empty);
+
+        if(rows.Count == 0) {
+            ImGui.TextColored(ImGuiColors.DalamudGrey, "No advanced metrics captured for this match yet.");
+            ImGui.TextWrapped("Possible causes: IINACT wasn't running during the match, this match was captured before v2.6.4.0, " +
+                              "or the rollup hasn't run. Try /pvpstatsrollup to backfill from existing event data.");
+            return;
+        }
+
+        ImGui.TextWrapped("Per-player metrics computed from IINACT log capture (Phase B). " +
+                          "Damage figures are sums of decoded effect-03 values from the network log; shielding figures use a curated formula catalog.");
+        ImGui.NewLine();
+
+        var rolledAt = rows.Count > 0 ? rows[0].RolledUpAtUtc : null;
+        if(!string.IsNullOrEmpty(rolledAt)) {
+            ImGui.TextColored(ImGuiColors.DalamudGrey, $"Last rolled up (UTC): {rolledAt}");
+        }
+
+        const ImGuiTableFlags tableFlags =
+            ImGuiTableFlags.Borders |
+            ImGuiTableFlags.RowBg |
+            ImGuiTableFlags.Resizable |
+            ImGuiTableFlags.SizingFixedFit |
+            ImGuiTableFlags.ScrollX;
+
+        if(ImGui.BeginTable("##phasebTable", 11, tableFlags)) {
+            ImGui.TableSetupColumn("Player", ImGuiTableColumnFlags.WidthFixed, 140f * ImGuiHelpers.GlobalScale);
+            ImGui.TableSetupColumn("Job", ImGuiTableColumnFlags.WidthFixed, 50f * ImGuiHelpers.GlobalScale);
+            ImGui.TableSetupColumn("Team", ImGuiTableColumnFlags.WidthFixed, 60f * ImGuiHelpers.GlobalScale);
+            ImGui.TableSetupColumn("Dmg Dealt (log)");
+            ImGui.TableSetupColumn("Dmg Taken (log)");
+            ImGui.TableSetupColumn("Shielding Done");
+            ImGui.TableSetupColumn("Shielding Mitigated");
+            ImGui.TableSetupColumn("Mit Avoided");
+            ImGui.TableSetupColumn("Amp Added");
+            ImGui.TableSetupColumn("Shielded Hits Taken");
+            ImGui.TableSetupColumn("Shields Applied");
+            ImGui.TableHeadersRow();
+
+            foreach(var r in rows) {
+                ImGui.TableNextRow();
+                ImGui.TableNextColumn(); ImGui.TextUnformatted(r.Name ?? "");
+                ImGui.TableNextColumn(); ImGui.TextUnformatted(r.Job ?? "");
+                ImGui.TableNextColumn(); ImGui.TextUnformatted(r.Team ?? "");
+                ImGui.TableNextColumn(); ImGui.TextUnformatted(FormatLong(r.DamageDealtLog));
+                ImGui.TableNextColumn(); ImGui.TextUnformatted(FormatLong(r.DamageTakenLog));
+                ImGui.TableNextColumn(); ImGui.TextUnformatted(FormatLong(r.ShieldingDoneLog));
+                ImGui.TableNextColumn(); ImGui.TextUnformatted(FormatLong(r.ShieldingDamageMitigatedLog));
+                ImGui.TableNextColumn(); ImGui.TextUnformatted(FormatLong(r.DamageTakenMitAvoided));
+                ImGui.TableNextColumn(); ImGui.TextUnformatted(FormatLong(r.DamageDealtAmpAdded));
+                ImGui.TableNextColumn(); ImGui.TextUnformatted(FormatLong(r.ShieldedHitsTaken));
+                ImGui.TableNextColumn(); ImGui.TextUnformatted(FormatLong(r.ShieldsAppliedCount));
+            }
+            ImGui.EndTable();
+        }
+
+        ImGui.NewLine();
+        if(ImGui.Button("Re-run rollup for this match")) {
+            var matchId = Match.Id?.ToString();
+            if(!string.IsNullOrEmpty(matchId)) {
+                Task.Run(() => Plugin.SqliteStorage.RollupCCMatchAsync(matchId));
+            }
+        }
+        ImGui.SameLine();
+        ImGuiHelper.HelpMarker("Re-walks captured events for this match and recomputes all Phase B metrics. " +
+                               "Useful after upgrading the plugin or tuning catalogs.", true, true);
+    }
+
+    private static string FormatLong(long? v) =>
+        v.HasValue ? v.Value.ToString("N0") : "-";
 }
