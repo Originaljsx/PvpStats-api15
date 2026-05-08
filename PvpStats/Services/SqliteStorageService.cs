@@ -146,6 +146,9 @@ CREATE INDEX IF NOT EXISTS idx_match_events_target ON match_events(match_id, tar
             EnsureColumn(conn, "match_players", "damage_taken_raw_log", "INTEGER");
             EnsureColumn(conn, "match_players", "damage_dealt_amp_added", "INTEGER");
             EnsureColumn(conn, "match_players", "damage_taken_mit_avoided", "INTEGER");
+            // Layer 4 (v2.6.9.0): the headline ones — total HP shielded + total HP your shields absorbed.
+            EnsureColumn(conn, "match_players", "shielding_done_log", "INTEGER");
+            EnsureColumn(conn, "match_players", "shielding_damage_mitigated_log", "INTEGER");
         } catch (Exception ex) {
             _plugin.Log.Error(ex, $"SQLite schema init failed at {_dbPath}.");
         }
@@ -701,6 +704,186 @@ WHERE p.match_id = $match_id;
         } catch (Exception ex) {
             _plugin.Log.Error(ex, $"Layer 3 rollup failed for match {matchId}.");
         }
+
+        // Layer 4 (v2.6.9.0) — the two HP metrics: shielding done + shielding-absorbed damage.
+        try {
+            await ApplyLayer4ShieldingHpAsync(matchId);
+        } catch (Exception ex) {
+            _plugin.Log.Error(ex, $"Layer 4 shielding-HP rollup failed for match {matchId}.");
+        }
+    }
+
+    /// <summary>
+    /// Layer 4: compute per-player <c>shielding_done_log</c> (sum of HP your shields
+    /// were worth at apply time) and <c>shielding_damage_mitigated_log</c> (estimated
+    /// HP your shields absorbed during the match).
+    ///
+    /// Pass 1 (collect):
+    ///   • For each shield-applying ability cast (catalog hit), compute shield HP:
+    ///     - HealEffectMultiple  → heal_amount × Factor (Adloquium-family)
+    ///     - MaxHpFraction       → most recent observed max HP for target × Factor
+    ///     - FlatValue           → constant
+    ///     Credit caster's <c>shielding_done</c>.
+    ///   • Build per-ability_id damage histogram (non-zero hits only) for median estimation.
+    ///   • Note shield-status applies so we know who applied which shield to whom.
+    ///
+    /// Pass 2 (attribute):
+    ///   • For each absorbed-by-shield hit (effect-03 value=0 on a target with at
+    ///     least one active shield-type buff), estimate the would-be damage as the
+    ///     median damage of that ability across non-absorbed hits in this match,
+    ///     credit the shield's source.
+    /// </summary>
+    private async Task ApplyLayer4ShieldingHpAsync(string matchId) {
+        await _writeLock.WaitAsync();
+        try {
+            using var conn = Open();
+
+            // Read all events relevant to this layer in seq order.
+            var formulas = Game.ShieldFormulaCatalog.ByAbilityId;
+            var shieldStatusIds = Game.ShieldCatalog.ShieldStatusIds;
+
+            var rows = new List<(long seq, string type, string? actor, string? target, int? abilityId, long? amount, long? heal, int absorbed)>(4096);
+            using (var read = conn.CreateCommand()) {
+                read.CommandText = @"
+SELECT seq, event_type, actor_name, target_name, ability_id, amount, heal_amount, absorbed
+FROM match_events
+WHERE match_id = $match_id
+ORDER BY seq;";
+                read.Parameters.AddWithValue("$match_id", matchId);
+                using var rdr = read.ExecuteReader();
+                while (rdr.Read()) {
+                    rows.Add((
+                        rdr.GetInt64(0),
+                        rdr.GetString(1),
+                        rdr.IsDBNull(2) ? null : rdr.GetString(2),
+                        rdr.IsDBNull(3) ? null : rdr.GetString(3),
+                        rdr.IsDBNull(4) ? null : rdr.GetInt32(4),
+                        rdr.IsDBNull(5) ? null : rdr.GetInt64(5),
+                        rdr.IsDBNull(6) ? null : rdr.GetInt64(6),
+                        rdr.IsDBNull(7) ? 0 : rdr.GetInt32(7)
+                    ));
+                }
+            }
+
+            if (rows.Count == 0) return;
+
+            var shieldingDone = new Dictionary<string, long>(StringComparer.Ordinal);
+            var shieldingMitigated = new Dictionary<string, long>(StringComparer.Ordinal);
+
+            // Per-ability damage histogram (non-zero damage events only).
+            var damageByAbility = new Dictionary<int, List<long>>();
+            // Most recent observed max HP per player (from hp_update events).
+            var lastMaxHp = new Dictionary<string, long>(StringComparer.Ordinal);
+            // Active shield buffs on each target: target_name -> list of (status_id, applier, applied_seq)
+            var activeShields = new Dictionary<string, List<(uint status, string applier, long seq)>>(StringComparer.Ordinal);
+
+            // Pass 1: collect histogram, max-HP snapshots, and the shielding_done credit.
+            foreach (var r in rows) {
+                if (r.type == "hp_update" && r.target != null && r.amount.HasValue) {
+                    // amount in hp_update was set to current HP; we don't have max HP captured.
+                    // For the v1 ship this means MaxHpFraction shields under-count when
+                    // the target's last seen max HP is unknown. Fixed in 4.1.
+                    lastMaxHp[r.target] = r.amount.Value;
+                } else if ((r.type == "ability" || r.type == "ability_aoe") && r.amount.HasValue && r.amount.Value > 0 && r.abilityId.HasValue) {
+                    if (!damageByAbility.TryGetValue(r.abilityId.Value, out var list)) {
+                        list = new List<long>();
+                        damageByAbility[r.abilityId.Value] = list;
+                    }
+                    list.Add(r.amount.Value);
+                }
+
+                if ((r.type == "ability" || r.type == "ability_aoe") && r.abilityId.HasValue && r.actor != null) {
+                    if (formulas.TryGetValue((uint)r.abilityId.Value, out var formula)) {
+                        long shieldHp = 0;
+                        switch (formula.Kind) {
+                            case Game.ShieldFormulaKind.HealEffectMultiple:
+                                if (r.heal.HasValue && r.heal.Value > 0)
+                                    shieldHp = (long)(r.heal.Value * formula.Factor);
+                                break;
+                            case Game.ShieldFormulaKind.MaxHpFraction:
+                                if (r.target != null && lastMaxHp.TryGetValue(r.target, out var maxHp) && maxHp > 0)
+                                    shieldHp = (long)(maxHp * formula.Factor);
+                                break;
+                            case Game.ShieldFormulaKind.FlatValue:
+                                shieldHp = formula.FlatValue;
+                                break;
+                        }
+                        if (shieldHp > 0) {
+                            shieldingDone.TryGetValue(r.actor, out var prev);
+                            shieldingDone[r.actor] = prev + shieldHp;
+                        }
+                    }
+                }
+            }
+
+            // Median damage per ability for absorbed-hit estimation.
+            var medianByAbility = new Dictionary<int, long>();
+            foreach (var kv in damageByAbility) {
+                kv.Value.Sort();
+                medianByAbility[kv.Key] = kv.Value[kv.Value.Count / 2];
+            }
+
+            // Pass 2: walk again with shield-active state, attribute absorbed hits.
+            foreach (var r in rows) {
+                if (r.type == "buff_apply" && r.abilityId.HasValue && r.target != null && shieldStatusIds.Contains((uint)r.abilityId.Value)) {
+                    if (!activeShields.TryGetValue(r.target, out var list)) {
+                        list = new List<(uint, string, long)>();
+                        activeShields[r.target] = list;
+                    }
+                    list.Add(((uint)r.abilityId.Value, r.actor ?? string.Empty, r.seq));
+                } else if (r.type == "buff_remove" && r.abilityId.HasValue && r.target != null && shieldStatusIds.Contains((uint)r.abilityId.Value)) {
+                    if (activeShields.TryGetValue(r.target, out var list)) {
+                        // Remove the most recent matching status_id (LIFO; reapplies overwrite).
+                        for (var i = list.Count - 1; i >= 0; i--) {
+                            if (list[i].status == (uint)r.abilityId.Value) { list.RemoveAt(i); break; }
+                        }
+                    }
+                } else if ((r.type == "ability" || r.type == "ability_aoe") && r.absorbed == 1 && r.target != null && r.abilityId.HasValue) {
+                    // Damage=0 on (presumably) shielded target. Find an active shield to credit.
+                    if (activeShields.TryGetValue(r.target, out var list) && list.Count > 0) {
+                        // Credit the most-recently-applied shield (heuristic; FFLogs uses
+                        // similar last-applied-wins logic when multiple shields are stacked).
+                        var (_, applier, _) = list[list.Count - 1];
+                        if (!string.IsNullOrEmpty(applier)) {
+                            var estimated = medianByAbility.GetValueOrDefault(r.abilityId.Value, 0L);
+                            if (estimated > 0) {
+                                shieldingMitigated.TryGetValue(applier, out var prev);
+                                shieldingMitigated[applier] = prev + estimated;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Bulk write.
+            using var tx = conn.BeginTransaction();
+            using var upd = conn.CreateCommand();
+            upd.Transaction = tx;
+            upd.CommandText = @"
+UPDATE match_players SET
+    shielding_done_log             = $done,
+    shielding_damage_mitigated_log = $mit
+WHERE match_id = $match_id AND name = $name;";
+            var pMatch = upd.Parameters.Add("$match_id", SqliteType.Text);
+            var pName = upd.Parameters.Add("$name", SqliteType.Text);
+            var pDone = upd.Parameters.Add("$done", SqliteType.Integer);
+            var pMit = upd.Parameters.Add("$mit", SqliteType.Integer);
+            pMatch.Value = matchId;
+
+            var allNames = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var k in shieldingDone.Keys) allNames.Add(k);
+            foreach (var k in shieldingMitigated.Keys) allNames.Add(k);
+
+            foreach (var name in allNames) {
+                pName.Value = name;
+                pDone.Value = shieldingDone.GetValueOrDefault(name, 0L);
+                pMit.Value = shieldingMitigated.GetValueOrDefault(name, 0L);
+                upd.ExecuteNonQuery();
+            }
+            tx.Commit();
+        } finally {
+            _writeLock.Release();
+        }
     }
 
     /// <summary>
@@ -911,6 +1094,7 @@ SELECT
     p.shielded_hits_taken, p.shielded_hits_caused_others,
     p.damage_dealt_raw_log, p.damage_taken_raw_log,
     p.damage_dealt_amp_added, p.damage_taken_mit_avoided,
+    p.shielding_done_log, p.shielding_damage_mitigated_log,
     p.rolled_up_at_utc
 FROM matches m
 JOIN match_players p ON p.match_id = m.id

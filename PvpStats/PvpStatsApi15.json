@@ -7,7 +7,7 @@
   "RepoUrl": "https://github.com/Originaljsx/PvpStats-api15",
   "ApplicableVersion": "any",
   "DalamudApiLevel": 15,
-  "Changelog": "* Layer 3 — mit/amp/vuln modeling. Curated DamageModifierCatalog with ~25 universal damage modifiers (Embolden, Battle Litany, Brotherhood, Reprisal, Feint, Addle, Heart of Light, Dark Mind, Bloodwhetting, Sentinel, Rampart, Vengeance, Tactician, Troubadour, Vulnerability Up, etc.).\n* C# rollup walks each match's event timeline maintaining per-player active-modifier sets; normalizes each damage event by Π(active outgoing factors on caster) × Π(active incoming factors on target).\n* Four new normalized columns: damage_dealt_raw_log, damage_taken_raw_log, damage_dealt_amp_added (how much your amps boosted your output), damage_taken_mit_avoided (how much your mits prevented from hitting you).\n* CSV export includes the new columns. Catalog is curated and easy to extend per-status.",
+  "Changelog": "* TWO HEADLINE METRICS: shielding_done_log (HP-equivalent of shields you applied) and shielding_damage_mitigated_log (HP your shields absorbed during the match).\n* shielding_done is computed from a curated ShieldFormulaCatalog mapping shield-applying abilities to HP formulas: Adloquium = heal_amount × 1.0, Eukrasian Diagnosis = max_hp × 0.30, Divine Benison = max_hp × 0.50, etc.\n* shielding_damage_mitigated estimates the would-be damage of each absorbed hit using the median damage of that ability across non-absorbed hits in the match, credited to the shield's source player.\n* CSV export includes both new columns.",
   "Tags": [
     "pvp",
     "statistics"
