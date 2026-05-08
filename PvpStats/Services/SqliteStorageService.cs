@@ -128,6 +128,14 @@ CREATE INDEX IF NOT EXISTS idx_match_events_target ON match_events(match_id, tar
             EnsureColumn(conn, "match_players", "deaths_caused", "INTEGER");
             EnsureColumn(conn, "match_players", "deaths_suffered_in_log", "INTEGER");
             EnsureColumn(conn, "match_players", "rolled_up_at_utc", "TEXT");
+            // Layer 1 (v2.6.6.0): exact damage / absorbed-hit metrics from the log.
+            EnsureColumn(conn, "match_players", "damage_dealt_log", "INTEGER");
+            EnsureColumn(conn, "match_players", "damage_taken_log", "INTEGER");
+            EnsureColumn(conn, "match_players", "heal_dealt_log", "INTEGER");
+            EnsureColumn(conn, "match_players", "zero_damage_hits_dealt", "INTEGER");
+            EnsureColumn(conn, "match_players", "zero_damage_hits_taken", "INTEGER");
+            EnsureColumn(conn, "match_events", "heal_amount", "INTEGER");
+            EnsureColumn(conn, "match_events", "absorbed", "INTEGER DEFAULT 0");
         } catch (Exception ex) {
             _plugin.Log.Error(ex, $"SQLite schema init failed at {_dbPath}.");
         }
@@ -171,10 +179,10 @@ CREATE INDEX IF NOT EXISTS idx_match_events_target ON match_events(match_id, tar
             ins.CommandText = @"
 INSERT OR REPLACE INTO match_events (
     match_id, seq, timestamp_utc, event_type, actor_name, target_name,
-    ability_id, ability_name, amount, flags_json
+    ability_id, ability_name, amount, heal_amount, absorbed, flags_json
 ) VALUES (
     $match_id, $seq, $ts, $event_type, $actor, $target,
-    $ability_id, $ability_name, $amount, $flags
+    $ability_id, $ability_name, $amount, $heal, $absorbed, $flags
 );
 ";
             var pMatch = ins.Parameters.Add("$match_id", SqliteType.Text);
@@ -186,6 +194,8 @@ INSERT OR REPLACE INTO match_events (
             var pAbId = ins.Parameters.Add("$ability_id", SqliteType.Integer);
             var pAbN = ins.Parameters.Add("$ability_name", SqliteType.Text);
             var pAmt = ins.Parameters.Add("$amount", SqliteType.Integer);
+            var pHeal = ins.Parameters.Add("$heal", SqliteType.Integer);
+            var pAbs = ins.Parameters.Add("$absorbed", SqliteType.Integer);
             var pFlags = ins.Parameters.Add("$flags", SqliteType.Text);
 
             pMatch.Value = matchId;
@@ -198,6 +208,8 @@ INSERT OR REPLACE INTO match_events (
                 pAbId.Value = (object?)e.AbilityId ?? DBNull.Value;
                 pAbN.Value = (object?)e.AbilityName ?? DBNull.Value;
                 pAmt.Value = (object?)e.Amount ?? DBNull.Value;
+                pHeal.Value = (object?)e.HealAmount ?? DBNull.Value;
+                pAbs.Value = e.Absorbed ? 1 : 0;
                 pFlags.Value = (object?)e.FlagsJson ?? DBNull.Value;
                 ins.ExecuteNonQuery();
             }
@@ -393,6 +405,8 @@ INSERT INTO match_players (
         public int? AbilityId;
         public string? AbilityName;
         public long? Amount;
+        public long? HealAmount;
+        public bool Absorbed;
         public string? FlagsJson;
     }
 
@@ -504,6 +518,54 @@ WHERE p.match_id = $match_id;
                 cmd.ExecuteNonQuery();
             }
 
+            // Layer 1 (v2.6.6.0): exact damage / absorbed-hit metrics from log.
+            // damage_dealt_log: sum of effect-03 damage values where this player was caster
+            // damage_taken_log: same but as target
+            // heal_dealt_log: sum of effect-04 (lifesteal/heal) values where this player was caster
+            // zero_damage_hits_*: count of ability events with absorbed=1 (effect-03 had value=0)
+            using (var cmd = conn.CreateCommand()) {
+                cmd.Transaction = tx;
+                cmd.CommandText = @"
+UPDATE match_players AS p
+SET
+    damage_dealt_log = COALESCE((
+        SELECT SUM(amount) FROM match_events e
+        WHERE e.match_id = p.match_id
+          AND e.event_type IN ('ability', 'ability_aoe')
+          AND e.actor_name = p.name
+    ), 0),
+    damage_taken_log = COALESCE((
+        SELECT SUM(amount) FROM match_events e
+        WHERE e.match_id = p.match_id
+          AND e.event_type IN ('ability', 'ability_aoe')
+          AND e.target_name = p.name
+    ), 0),
+    heal_dealt_log = COALESCE((
+        SELECT SUM(heal_amount) FROM match_events e
+        WHERE e.match_id = p.match_id
+          AND e.event_type IN ('ability', 'ability_aoe')
+          AND e.actor_name = p.name
+    ), 0),
+    zero_damage_hits_dealt = COALESCE((
+        SELECT COUNT(*) FROM match_events e
+        WHERE e.match_id = p.match_id
+          AND e.event_type IN ('ability', 'ability_aoe')
+          AND e.actor_name = p.name
+          AND e.absorbed = 1
+    ), 0),
+    zero_damage_hits_taken = COALESCE((
+        SELECT COUNT(*) FROM match_events e
+        WHERE e.match_id = p.match_id
+          AND e.event_type IN ('ability', 'ability_aoe')
+          AND e.target_name = p.name
+          AND e.absorbed = 1
+    ), 0)
+WHERE p.match_id = $match_id;
+";
+                cmd.Parameters.AddWithValue("$match_id", matchId);
+                cmd.ExecuteNonQuery();
+            }
+
             tx.Commit();
         } catch (Exception ex) {
             _plugin.Log.Error(ex, $"Rollup failed for match {matchId}.");
@@ -555,7 +617,10 @@ SELECT
     p.damage_dealt, p.damage_taken, p.hp_restored, p.time_on_crystal_seconds,
     p.effective_shielding, p.effective_mitigation, p.overheal,
     p.events_involving_player, p.buff_param_applied_sum, p.buff_apply_count, p.buff_remove_count,
-    p.deaths_caused, p.deaths_suffered_in_log, p.rolled_up_at_utc
+    p.deaths_caused, p.deaths_suffered_in_log,
+    p.damage_dealt_log, p.damage_taken_log, p.heal_dealt_log,
+    p.zero_damage_hits_dealt, p.zero_damage_hits_taken,
+    p.rolled_up_at_utc
 FROM matches m
 JOIN match_players p ON p.match_id = m.id
 WHERE m.mode = 'cc' AND m.is_deleted = 0 AND m.is_completed = 1

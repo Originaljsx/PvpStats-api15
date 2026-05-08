@@ -14,18 +14,22 @@ namespace PvpStats.Services.Logging;
 /// memory between StartCapture / StopCapture so the LiteDB+SQLite write paths
 /// stay off the watcher thread.
 ///
-/// Filters to the line types relevant for advanced PvP analytics:
-///   21  NetworkAbility       (single-target action effect; flags include 'absorbed')
+/// Captured line types:
+///   21  NetworkAbility       (single-target action effect — 8 effect entries parsed)
 ///   22  NetworkAOEAbility    (AOE action effect)
 ///   25  NetworkDeath
-///   26  NetworkBuff          (status apply — shield value lives in a Param field)
-///   30  NetworkBuffRemove    (status removed — diff vs apply gives effective shield)
-/// Other line types are dropped to keep volume manageable. The full raw line
-/// is preserved in match_events.flags_json so step 3 can do detailed parsing
-/// without re-reading the IINACT logs.
+///   26  NetworkBuff          (status apply — Field(7) is hex param/stack count)
+///   30  NetworkBuffRemove    (status removed — Field(7) is remaining param)
+///   37  NetworkActionSync    (per-action status snapshot — has duration float per status)
+///   38  NetworkStatusEffect  (full status snapshot — fires periodically)
+///   39  NetworkUpdateHp      (HP/MP snapshot — useful to diff for actual HP loss)
+///
+/// For each type 21/22 line we also pre-parse the 8 effect entries: sum the
+/// effect-03 (damage) values into <see cref="SqliteStorageService.MatchEventRow.Amount"/>
+/// and flag any zero-damage effect-03 entries for downstream analytics.
 /// </summary>
 internal sealed class CcEventIngestor : IDisposable {
-    private static readonly HashSet<int> CapturedTypes = new() { 21, 22, 25, 26, 30 };
+    private static readonly HashSet<int> CapturedTypes = new() { 21, 22, 25, 26, 30, 37, 38, 39 };
 
     private readonly Plugin _plugin;
     private readonly IinactLogWatcher _watcher;
@@ -124,32 +128,51 @@ internal sealed class CcEventIngestor : IDisposable {
         };
 
         // Field positions per OverlayPlugin/cactbot LogGuide. ActLogLine.Field(N)
-        // returns the Nth field after type+timestamp.
+        // returns the Nth field after type+timestamp. Verified against real CC
+        // match logs at C:\Users\Jacob\ccstats\Network_30109_20260508.log.
         switch (line.Type) {
-            case 21: case 22: // NetworkAbility / NetworkAOEAbility
-                // Field(1)=casterId, Field(2)=casterName, Field(3)=abilityIdHex,
-                // Field(4)=abilityName, Field(5)=targetId, Field(6)=targetName.
-                // (Cactbot's "Index N" maps to ActLogLine.Field(N-1).)
+            case 21: case 22:
+                // NetworkAbility / NetworkAOEAbility
+                // Field(0)=casterId, Field(1)=casterName, Field(2)=abilityIdHex,
+                // Field(3)=abilityName, Field(4)=targetId, Field(5)=targetName.
+                // Effect entries are 8 (flags, value) pairs at Fields(6..21).
                 row.ActorName = NullIfEmpty(line.Field(1));
                 row.TargetName = NullIfEmpty(line.Field(5));
                 row.AbilityId = (int)line.FieldHex(2);
                 row.AbilityName = NullIfEmpty(line.Field(3));
+                ParseAbilityEffects(line, row);
                 break;
-            case 25: // NetworkDeath: Field(0)=victimId, Field(1)=victimName, Field(2)=killerId, Field(3)=killerName
+            case 25:
+                // NetworkDeath: Field(0)=victimId, Field(1)=victimName,
+                // Field(2)=killerId, Field(3)=killerName.
                 row.TargetName = NullIfEmpty(line.Field(1));
                 row.ActorName = NullIfEmpty(line.Field(3));
                 break;
             case 26: case 30:
-                // NetworkBuff / NetworkBuffRemove:
-                // Field(0)=statusIdHex, Field(1)=statusName, Field(2)=duration,
-                // Field(3)=sourceId, Field(4)=sourceName, Field(5)=targetId,
-                // Field(6)=targetName, Field(7)=stackCount/Param (shield value
-                // for shield-type statuses).
+                // NetworkBuff / NetworkBuffRemove. Field(7) is a HEX value
+                // (count or shield param — confirmed by Galvanize=00, Swift Sprint=64=100decimal).
                 row.AbilityId = (int)line.FieldHex(0);
                 row.AbilityName = NullIfEmpty(line.Field(1));
                 row.ActorName = NullIfEmpty(line.Field(4));
                 row.TargetName = NullIfEmpty(line.Field(6));
-                row.Amount = line.FieldInt(7);
+                row.Amount = (long)line.FieldHex(7);
+                break;
+            case 37:
+                // NetworkActionSync — per-ability status snapshot.
+                // Field(0)=actorId, Field(1)=actorName.
+                row.ActorName = NullIfEmpty(line.Field(1));
+                break;
+            case 38:
+                // NetworkStatusEffect — full per-player status snapshot.
+                // Field(0)=playerId, Field(1)=playerName.
+                row.TargetName = NullIfEmpty(line.Field(1));
+                break;
+            case 39:
+                // NetworkUpdateHp — HP/MP snapshot.
+                // Field(0)=playerId, Field(1)=playerName, Field(2)=currentHpDecimal,
+                // Field(3)=maxHpDecimal.
+                row.TargetName = NullIfEmpty(line.Field(1));
+                row.Amount = line.FieldInt(2); // current HP
                 break;
         }
 
@@ -190,8 +213,52 @@ internal sealed class CcEventIngestor : IDisposable {
         25 => "death",
         26 => "buff_apply",
         30 => "buff_remove",
+        37 => "status_sync",
+        38 => "status_snapshot",
+        39 => "hp_update",
         _ => $"raw_{t}",
     };
+
+    /// <summary>
+    /// Parses the 8 (flags, value) effect-entry pairs of a NetworkAbility line
+    /// (Fields 6..21). For each effect-03 (damage) entry, accumulates damage
+    /// from the upper 16 bits of the value field — verified against real CC
+    /// damage values (e.g. flags=720003 value=33900000 → damage=0x3390=13200).
+    /// Sets row.Amount to the total damage (or 0 if none) and row.Absorbed=true
+    /// when any effect-03 entry has value=0 (typical signature of a fully-
+    /// absorbed-by-shield hit).
+    /// </summary>
+    private static void ParseAbilityEffects(ActLogLine line, SqliteStorageService.MatchEventRow row) {
+        long totalDamage = 0;
+        long totalHeal = 0;
+        bool sawZeroDamage = false;
+
+        for (var pair = 0; pair < 8; pair++) {
+            var flagsField = line.Field(6 + pair * 2);
+            var valueField = line.Field(7 + pair * 2);
+            if (string.IsNullOrEmpty(flagsField) || flagsField == "0") continue;
+            if (!uint.TryParse(flagsField, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out var flagsHex)) continue;
+            uint valueHex = 0;
+            if (!string.IsNullOrEmpty(valueField)) {
+                uint.TryParse(valueField, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out valueHex);
+            }
+            var effectType = flagsHex & 0xFF;
+            switch (effectType) {
+                case 0x03: // damage
+                    if (valueHex == 0) sawZeroDamage = true;
+                    else totalDamage += (long)(valueHex >> 16);
+                    break;
+                case 0x04: // heal (lifesteal in attack abilities — confirmed not absorption)
+                    totalHeal += (long)(valueHex >> 16);
+                    break;
+                // 0x0E (status apply), 0x1B (ability echo), 0x0F (mp/tp gain) — not aggregated here
+            }
+        }
+
+        row.Amount = totalDamage;
+        row.HealAmount = totalHeal;
+        row.Absorbed = sawZeroDamage;
+    }
 
     private static string ToIsoUtc(DateTime dt) {
         if (dt == DateTime.MinValue) return DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ", CultureInfo.InvariantCulture);
