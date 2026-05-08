@@ -3,7 +3,7 @@
 	<PropertyGroup>
 		<Authors>SaMo (fork: Originaljsx)</Authors>
 		<Company></Company>
-		<Version>2.6.10.0</Version>
+		<Version>2.6.10.1</Version>
 		<Description>Pvp Stats — Dalamud API 15 community fork</Description>
 		<Copyright></Copyright>
 		<PackageProjectUrl></PackageProjectUrl>

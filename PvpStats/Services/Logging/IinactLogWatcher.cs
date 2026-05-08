@@ -110,8 +110,15 @@ internal sealed class IinactLogWatcher : IDisposable {
         } finally { Interlocked.Exchange(ref _isProcessing, 0); }
     }
 
+    private int _pollsSinceLastLog;
+
     private void Poll() {
-        if (!Directory.Exists(_logDir)) return;
+        if (!Directory.Exists(_logDir)) {
+            if (++_pollsSinceLastLog % 30 == 0) {
+                _plugin.Log.Warning($"[IinactLogWatcher] Log directory still missing: {_logDir}");
+            }
+            return;
+        }
 
         // Detect rotation (midnight) — the newest Network_*.log file becomes current.
         var newestName = FindNewestLogFile();
@@ -136,7 +143,14 @@ internal sealed class IinactLogWatcher : IDisposable {
         }
 
         var bytesToRead = currentSize - startPosition;
-        if (bytesToRead <= 0) return;
+        if (bytesToRead <= 0) {
+            // Periodic visibility for the case where the file is open but never grows
+            // (could indicate IINACT logging is disabled, or watcher is on the wrong file).
+            if (++_pollsSinceLastLog % 60 == 0) {
+                _plugin.Log.Information($"[IinactLogWatcher] No new bytes in {Path.GetFileName(fullPath)} for ~60s (size {currentSize}, lines so far {Interlocked.Read(ref _linesRead)}).");
+            }
+            return;
+        }
 
         ReadAndEmit(fullPath, startPosition, bytesToRead);
 
@@ -151,8 +165,6 @@ internal sealed class IinactLogWatcher : IDisposable {
             using var fs = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
             fs.Seek(position, SeekOrigin.Begin);
 
-            // Read into buffer; a 5-min CC match emits well under a few hundred KB,
-            // and we're polling every second so per-poll chunks are tiny.
             var capped = (int)Math.Min(bytesToRead, 4 * 1024 * 1024);
             var buffer = new byte[capped];
             int total = 0;
@@ -161,12 +173,12 @@ internal sealed class IinactLogWatcher : IDisposable {
                 if (got <= 0) break;
                 total += got;
             }
-            if (total == 0) return;
+            if (total == 0) {
+                _plugin.Log.Information($"[IinactLogWatcher] Read 0 bytes at offset {position} from {Path.GetFileName(fullPath)} (size diff said {bytesToRead}).");
+                return;
+            }
 
-            // Split into lines on \n. Tolerate \r endings.
             var text = System.Text.Encoding.UTF8.GetString(buffer, 0, total);
-            // If we didn't consume all bytes (capped), reset state to consumed amount only
-            // so the next poll picks up where we left off.
             var trailing = bytesToRead - total;
             if (trailing > 0) {
                 lock (_stateLock) {
@@ -175,15 +187,28 @@ internal sealed class IinactLogWatcher : IDisposable {
             }
 
             var lines = text.Split('\n');
+            int emitted = 0;
             for (var i = 0; i < lines.Length; i++) {
                 var s = lines[i].TrimEnd('\r').Trim();
                 if (s.Length == 0) continue;
                 EmitLine(s);
+                emitted++;
             }
-        } catch (IOException) {
-            // File was rotated out from under us, etc. Next poll will recover.
+
+            // Diagnostic: surface the first successful read per file, plus periodic
+            // progress, so we can tell whether the watcher pipeline is actually running.
+            if (Interlocked.Read(ref _linesRead) <= emitted) {
+                _plugin.Log.Information($"[IinactLogWatcher] First read from {Path.GetFileName(fullPath)}: {emitted} lines, {total} bytes from offset {position}.");
+            } else if (Interlocked.Read(ref _linesRead) % 5000 < emitted) {
+                _plugin.Log.Information($"[IinactLogWatcher] Progress: {Interlocked.Read(ref _linesRead)} lines processed total, current file {Path.GetFileName(fullPath)}.");
+            }
+        } catch (IOException ioex) {
+            // No longer silent — surface it so we can see if file-sharing is the issue.
+            _plugin.Log.Warning(ioex, $"[IinactLogWatcher] IOException reading {Path.GetFileName(fullPath)} at offset {position}, {bytesToRead} bytes requested.");
+        } catch (UnauthorizedAccessException uex) {
+            _plugin.Log.Warning(uex, $"[IinactLogWatcher] Access denied reading {Path.GetFileName(fullPath)}.");
         } catch (Exception ex) {
-            _plugin.Log.Warning(ex, $"[IinactLogWatcher] Read error at {fullPath}.");
+            _plugin.Log.Warning(ex, $"[IinactLogWatcher] Unexpected read error at {fullPath}.");
         }
     }
 
@@ -192,7 +217,10 @@ internal sealed class IinactLogWatcher : IDisposable {
         try { line = new ActLogLine(raw); }
         catch { return; } // Skip malformed silently.
 
-        Interlocked.Increment(ref _linesRead);
+        var n = Interlocked.Increment(ref _linesRead);
+        if (n == 1) {
+            _plugin.Log.Information($"[IinactLogWatcher] First line emitted (type={line.Type}). Line tail: '{(raw.Length > 80 ? raw[..80] + "..." : raw)}'");
+        }
         try {
             LineReceived?.Invoke(line);
         } catch (Exception ex) {
