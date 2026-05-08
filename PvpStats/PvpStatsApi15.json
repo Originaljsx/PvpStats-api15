@@ -7,7 +7,7 @@
   "RepoUrl": "https://github.com/Originaljsx/PvpStats-api15",
   "ApplicableVersion": "any",
   "DalamudApiLevel": 15,
-  "Changelog": "* Layer 2 — shield-aware metrics. Curated catalog of shield-applying status IDs (Galvanize, Catalyze, Eukrasian Diagnosis/Prognosis, Heart of Stone/Light/Corundum, Divine Benison, Aquaveil, Sheltron, Holy Sheltron, Bloodwhetting, Oblation, Macrocosmos, etc.).\n* Four new rollup columns: shields_applied_count, shield_uptime_seconds, shielded_hits_taken (zero-damage hits while you were shielded), shielded_hits_caused_others (zero-damage hits on teammates whose shield YOU sourced).\n* CSV export includes the new columns.",
+  "Changelog": "* Layer 3 — mit/amp/vuln modeling. Curated DamageModifierCatalog with ~25 universal damage modifiers (Embolden, Battle Litany, Brotherhood, Reprisal, Feint, Addle, Heart of Light, Dark Mind, Bloodwhetting, Sentinel, Rampart, Vengeance, Tactician, Troubadour, Vulnerability Up, etc.).\n* C# rollup walks each match's event timeline maintaining per-player active-modifier sets; normalizes each damage event by Π(active outgoing factors on caster) × Π(active incoming factors on target).\n* Four new normalized columns: damage_dealt_raw_log, damage_taken_raw_log, damage_dealt_amp_added (how much your amps boosted your output), damage_taken_mit_avoided (how much your mits prevented from hitting you).\n* CSV export includes the new columns. Catalog is curated and easy to extend per-status.",
   "Tags": [
     "pvp",
     "statistics"

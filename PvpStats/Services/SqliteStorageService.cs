@@ -141,6 +141,11 @@ CREATE INDEX IF NOT EXISTS idx_match_events_target ON match_events(match_id, tar
             EnsureColumn(conn, "match_players", "shield_uptime_seconds", "REAL");
             EnsureColumn(conn, "match_players", "shielded_hits_taken", "INTEGER");
             EnsureColumn(conn, "match_players", "shielded_hits_caused_others", "INTEGER");
+            // Layer 3 (v2.6.8.0): mit/amp/vuln normalization columns.
+            EnsureColumn(conn, "match_players", "damage_dealt_raw_log", "INTEGER");
+            EnsureColumn(conn, "match_players", "damage_taken_raw_log", "INTEGER");
+            EnsureColumn(conn, "match_players", "damage_dealt_amp_added", "INTEGER");
+            EnsureColumn(conn, "match_players", "damage_taken_mit_avoided", "INTEGER");
         } catch (Exception ex) {
             _plugin.Log.Error(ex, $"SQLite schema init failed at {_dbPath}.");
         }
@@ -688,6 +693,172 @@ WHERE p.match_id = $match_id;
         } finally {
             _writeLock.Release();
         }
+
+        // Layer 3 (v2.6.8.0) — mit/amp/vuln normalization. Runs as a separate
+        // read-then-write pass since it walks the event timeline in C# memory.
+        try {
+            await ApplyLayer3RollupAsync(matchId);
+        } catch (Exception ex) {
+            _plugin.Log.Error(ex, $"Layer 3 rollup failed for match {matchId}.");
+        }
+    }
+
+    /// <summary>
+    /// Layer 3: walks every event in seq order while maintaining per-player
+    /// active-modifier sets, normalizes each damage event's amount by the
+    /// product of active modifiers, and writes the per-player aggregates.
+    ///
+    /// Damage normalization model is multiplicative:
+    ///   raw_damage = displayed_damage / (Π outgoing_factors_on_caster × Π incoming_factors_on_target)
+    /// where each factor &lt; 1.0 reduces damage and &gt; 1.0 amplifies.
+    /// Dom-restricted modifiers (PhysicalOnly / MagicalOnly) currently apply
+    /// to all damage — a known imprecision, since the IINACT log doesn't
+    /// expose damage type cleanly. Layer 3.1 can refine this when we model
+    /// per-ability damage types.
+    /// </summary>
+    private async Task ApplyLayer3RollupAsync(string matchId) {
+        await _writeLock.WaitAsync();
+        try {
+            using var conn = Open();
+
+            // Read all events for the match in sequence order. We only need a
+            // few columns and we cap at events relevant to layer 3 (modifier
+            // applies/removes + ability damage).
+            var modIds = Game.DamageModifierCatalog.ById;
+            var modIdsCsv = Game.DamageModifierCatalog.SqlInList();
+
+            var events = new List<(long seq, string type, string? actor, string? target, int? abilityId, long? amount)>(4096);
+            using (var read = conn.CreateCommand()) {
+                read.CommandText = $@"
+SELECT seq, event_type, actor_name, target_name, ability_id, amount
+FROM match_events
+WHERE match_id = $match_id
+  AND (
+        event_type IN ('ability', 'ability_aoe')
+        OR (event_type IN ('buff_apply', 'buff_remove') AND ability_id IN ({modIdsCsv}))
+      )
+ORDER BY seq;";
+                read.Parameters.AddWithValue("$match_id", matchId);
+                using var rdr = read.ExecuteReader();
+                while (rdr.Read()) {
+                    events.Add((
+                        rdr.GetInt64(0),
+                        rdr.GetString(1),
+                        rdr.IsDBNull(2) ? null : rdr.GetString(2),
+                        rdr.IsDBNull(3) ? null : rdr.GetString(3),
+                        rdr.IsDBNull(4) ? null : rdr.GetInt32(4),
+                        rdr.IsDBNull(5) ? null : rdr.GetInt64(5)
+                    ));
+                }
+            }
+
+            if (events.Count == 0) return;
+
+            // Active modifiers per player: Dictionary<playerName, HashSet<statusId>>.
+            // We track by status_id only; if a status is reapplied while still active,
+            // the second apply is a no-op (HashSet semantics), and the first remove
+            // clears it. Imperfect for stack-counted modifiers but adequate for the
+            // boolean-presence statuses we're tracking.
+            var active = new Dictionary<string, HashSet<uint>>(StringComparer.Ordinal);
+
+            // Per-player aggregates we'll write back.
+            var rawDealt = new Dictionary<string, double>(StringComparer.Ordinal);
+            var rawTaken = new Dictionary<string, double>(StringComparer.Ordinal);
+            var preventedByMit = new Dictionary<string, double>(StringComparer.Ordinal);
+            var ampEnhanced = new Dictionary<string, double>(StringComparer.Ordinal);
+
+            HashSet<uint> ActiveOf(string? name) {
+                if (string.IsNullOrEmpty(name)) return new HashSet<uint>();
+                if (!active.TryGetValue(name!, out var set)) {
+                    set = new HashSet<uint>();
+                    active[name!] = set;
+                }
+                return set;
+            }
+
+            foreach (var e in events) {
+                if (e.type == "buff_apply" && e.abilityId.HasValue && e.target != null) {
+                    ActiveOf(e.target).Add((uint)e.abilityId.Value);
+                } else if (e.type == "buff_remove" && e.abilityId.HasValue && e.target != null) {
+                    ActiveOf(e.target).Remove((uint)e.abilityId.Value);
+                } else if ((e.type == "ability" || e.type == "ability_aoe") && e.amount.HasValue && e.amount.Value > 0) {
+                    var displayed = (double)e.amount.Value;
+
+                    // Compute outgoing-amp factor on caster.
+                    double outFactor = 1.0;
+                    if (e.actor != null) {
+                        foreach (var sid in ActiveOf(e.actor)) {
+                            if (modIds.TryGetValue(sid, out var mod) && mod.Direction == Game.ModifierDirection.Outgoing) {
+                                outFactor *= mod.Factor;
+                            }
+                        }
+                    }
+                    // Incoming-mit factor on target.
+                    double inFactor = 1.0;
+                    if (e.target != null) {
+                        foreach (var sid in ActiveOf(e.target)) {
+                            if (modIds.TryGetValue(sid, out var mod) && mod.Direction == Game.ModifierDirection.Incoming) {
+                                inFactor *= mod.Factor;
+                            }
+                        }
+                    }
+
+                    var combined = outFactor * inFactor;
+                    if (combined <= 0) combined = 1.0;
+                    var raw = displayed / combined;
+
+                    if (e.actor != null) {
+                        rawDealt.TryGetValue(e.actor, out var prevD);
+                        rawDealt[e.actor] = prevD + raw;
+                        // amp_enhanced = how much MORE the caster dealt vs raw (positive when outFactor > 1)
+                        ampEnhanced.TryGetValue(e.actor, out var prevA);
+                        ampEnhanced[e.actor] = prevA + (displayed - raw * inFactor); // outgoing-amp contribution only
+                    }
+                    if (e.target != null) {
+                        rawTaken.TryGetValue(e.target, out var prevT);
+                        rawTaken[e.target] = prevT + raw;
+                        // prevented_by_mit = raw_to_target - actual_displayed (positive when inFactor < 1)
+                        preventedByMit.TryGetValue(e.target, out var prevM);
+                        preventedByMit[e.target] = prevM + (raw - displayed) * (inFactor < 1.0 ? 1.0 : 0.0);
+                    }
+                }
+            }
+
+            // Bulk update match_players.
+            using var tx2 = conn.BeginTransaction();
+            using var upd = conn.CreateCommand();
+            upd.Transaction = tx2;
+            upd.CommandText = @"
+UPDATE match_players SET
+    damage_dealt_raw_log     = $dealt,
+    damage_taken_raw_log     = $taken,
+    damage_dealt_amp_added   = $amp,
+    damage_taken_mit_avoided = $mit
+WHERE match_id = $match_id AND name = $name;";
+            var pMatch = upd.Parameters.Add("$match_id", SqliteType.Text);
+            var pName = upd.Parameters.Add("$name", SqliteType.Text);
+            var pD = upd.Parameters.Add("$dealt", SqliteType.Integer);
+            var pT = upd.Parameters.Add("$taken", SqliteType.Integer);
+            var pA = upd.Parameters.Add("$amp", SqliteType.Integer);
+            var pM = upd.Parameters.Add("$mit", SqliteType.Integer);
+            pMatch.Value = matchId;
+
+            var allNames = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var k in rawDealt.Keys) allNames.Add(k);
+            foreach (var k in rawTaken.Keys) allNames.Add(k);
+
+            foreach (var name in allNames) {
+                pName.Value = name;
+                pD.Value = (long)Math.Round(rawDealt.GetValueOrDefault(name, 0));
+                pT.Value = (long)Math.Round(rawTaken.GetValueOrDefault(name, 0));
+                pA.Value = (long)Math.Round(ampEnhanced.GetValueOrDefault(name, 0));
+                pM.Value = (long)Math.Round(preventedByMit.GetValueOrDefault(name, 0));
+                upd.ExecuteNonQuery();
+            }
+            tx2.Commit();
+        } finally {
+            _writeLock.Release();
+        }
     }
 
     /// <summary>
@@ -738,6 +909,8 @@ SELECT
     p.zero_damage_hits_dealt, p.zero_damage_hits_taken,
     p.shields_applied_count, p.shield_uptime_seconds,
     p.shielded_hits_taken, p.shielded_hits_caused_others,
+    p.damage_dealt_raw_log, p.damage_taken_raw_log,
+    p.damage_dealt_amp_added, p.damage_taken_mit_avoided,
     p.rolled_up_at_utc
 FROM matches m
 JOIN match_players p ON p.match_id = m.id
